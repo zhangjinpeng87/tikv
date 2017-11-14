@@ -450,7 +450,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/pingcap/rust-rocksdb.git?branch=zhangjinpeng/improve-ingest#6f85e386dac863353e28cac4e2905ee7aa95f4fc"
+source = "git+https://github.com/pingcap/rust-rocksdb.git?branch=zhangjinpeng/improve-ingest#190dfa7229088941c7b4c28dadd9ebfe3cf2c083"
 dependencies = [
  "cc 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.31 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -739,7 +739,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/pingcap/rust-rocksdb.git?branch=zhangjinpeng/improve-ingest#6f85e386dac863353e28cac4e2905ee7aa95f4fc"
+source = "git+https://github.com/pingcap/rust-rocksdb.git?branch=zhangjinpeng/improve-ingest#190dfa7229088941c7b4c28dadd9ebfe3cf2c083"
 dependencies = [
  "crc 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.31 (registry+https://github.com/rust-lang/crates.io-index)",
