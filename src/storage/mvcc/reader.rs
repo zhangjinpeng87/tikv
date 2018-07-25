@@ -30,6 +30,7 @@ const GC_MAX_ROW_VERSIONS_THRESHOLD: u64 = 100;
 // iterator's direction from forward to backward is as expensive as seek in
 // RocksDB, so don't set REVERSE_SEEK_BOUND too small.
 const REVERSE_SEEK_BOUND: u64 = 32;
+const SEEK_BOUND: u64 = 8;
 
 pub struct MvccReader<S: Snapshot> {
     snapshot: S,
@@ -381,10 +382,89 @@ impl<S: Snapshot> MvccReader<S> {
                     },
                 }
             };
-            if let Some(v) = self.get(&key, ts)? {
+            if let Some(v) = self.get_impl(&key, ts)? {
                 return Ok(Some((key, v)));
             }
+
+            // get_impl may call write_cursor's next and seek.
+            if !self.write_cursor.as_ref().unwrap().valid() {
+                write_valid = false;
+            }
+
             key = key.append_ts(0);
+        }
+    }
+
+    pub fn get_impl(&mut self, user_key: &Key, ts: u64) -> Result<Option<Value>> {
+        assert!(self.lock_cursor.is_some());
+        assert!(self.write_cursor.is_some());
+
+        // Check lock.
+        match self.isolation_level {
+            IsolationLevel::SI => {
+                let l_cur = self.lock_cursor.as_ref().unwrap();
+                if l_cur.valid() && l_cur.key() == user_key.encoded().as_slice() {
+                    self.statistics.lock.processed += 1;
+                    self.check_lock_impl(user_key, ts, Lock::parse(l_cur.value())?)?;
+                }
+            }
+            IsolationLevel::RC => {}
+        }
+
+        // Get value for this user key.
+        let mut round = 0;
+        let mut seek_used = false;
+        loop {
+            {
+                let w_cur = self.write_cursor.as_ref().unwrap();
+                if !w_cur.valid() {
+                    return Ok(None);
+                }
+
+                if !w_cur.key().starts_with(user_key.encoded().as_slice()) {
+                    return Ok(None);
+                }
+            }
+
+            let (commit_ts, key) = {
+                let w_cur = self.write_cursor.as_ref().unwrap();
+                let w_key = Key::from_encoded(w_cur.key().to_vec());
+                (w_key.decode_ts()?, w_key.truncate_ts()?)
+            };
+            assert_eq!(&key, user_key);
+
+            if commit_ts <= ts {
+                let mut write = Write::parse(self.write_cursor.as_ref().unwrap().value())?;
+                match write.write_type {
+                    WriteType::Put => {
+                        if write.short_value.is_some() {
+                            if self.key_only {
+                                return Ok(Some(vec![]));
+                            } else {
+                                return Ok(write.short_value.take());
+                            }
+                        } else {
+                            return self.load_data(user_key, write.start_ts).map(Some);
+                        }
+                    }
+                    WriteType::Delete => return Ok(None),
+                    WriteType::Lock | WriteType::Rollback => {}
+                }
+            }
+
+            round += 1;
+            if round > SEEK_BOUND && !seek_used {
+                self.write_cursor
+                    .as_mut()
+                    .unwrap()
+                    .internal_seek(&user_key.append_ts(ts), &mut self.statistics.write)?;
+                seek_used = true;
+            } else {
+                self.write_cursor
+                    .as_mut()
+                    .unwrap()
+                    .next(&mut self.statistics.write);
+            }
         }
     }
 
