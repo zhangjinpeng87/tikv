@@ -127,6 +127,25 @@ impl Key {
     }
 }
 
+pub fn decode_ts_from_key(key: &[u8]) -> Result<u64, codec::Error> {
+    let len = key.len();
+    if len < number::U64_SIZE {
+        // TODO: IMHO, this should be an assertion failure instead of
+        // returning an error. If this happens, it indicates a bug in
+        // the caller module, have to make code change to fix it.
+        //
+        // Even if it passed the length check, it still could be buggy,
+        // a better way is to introduce a type `TimestampedKey`, and
+        // functions to convert between `TimestampedKey` and `Key`.
+        // `TimestampedKey` is in a higher (MVCC) layer, while `Key` is
+        // in the core storage engine layer.
+        Err(codec::Error::KeyLength)
+    } else {
+        let mut ts = &key[len - number::U64_SIZE..];
+        Ok(number::decode_u64_desc(&mut ts)?)
+    }
+}
+
 /// Hash for `Key`.
 impl Hash for Key {
     fn hash<H: Hasher>(&self, state: &mut H) {

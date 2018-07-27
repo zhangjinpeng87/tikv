@@ -18,7 +18,7 @@ use kvproto::kvrpcpb::IsolationLevel;
 use raftstore::store::engine::IterOption;
 use std::u64;
 use storage::engine::{Cursor, ScanMode, Snapshot, Statistics};
-use storage::{Key, Value, CF_LOCK, CF_WRITE};
+use storage::{decode_ts_from_key, Key, Value, CF_LOCK, CF_WRITE};
 use util::properties::MvccProperties;
 
 const GC_MAX_ROW_VERSIONS_THRESHOLD: u64 = 100;
@@ -426,12 +426,10 @@ impl<S: Snapshot> MvccReader<S> {
                 }
             }
 
-            let (commit_ts, key) = {
+            let commit_ts = {
                 let w_cur = self.write_cursor.as_ref().unwrap();
-                let w_key = Key::from_encoded(w_cur.key().to_vec());
-                (w_key.decode_ts()?, w_key.truncate_ts()?)
+                decode_ts_from_key(w_cur.key())?
             };
-            assert_eq!(&key, user_key);
 
             if commit_ts <= ts {
                 let mut write = Write::parse(self.write_cursor.as_ref().unwrap().value())?;
