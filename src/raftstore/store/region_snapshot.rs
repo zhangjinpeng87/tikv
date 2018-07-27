@@ -278,6 +278,7 @@ impl RegionIterator {
         self.update_valid(false)
     }
 
+    #[inline]
     pub fn next(&mut self) -> bool {
         if !self.valid {
             return false;

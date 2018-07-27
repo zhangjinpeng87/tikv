@@ -129,6 +129,18 @@ impl<S: Snapshot> StoreScanner<S> {
         Ok(self.reader.reverse_seek(key, self.start_ts)?)
     }
 
+    pub fn next_row(&mut self) -> Result<Option<(Key, Value)>> {
+        Ok(self.reader.next_row(self.start_ts)?)
+    }
+
+    pub fn next_row2(&mut self) -> Result<bool> {
+        Ok(self.reader.next_row2(self.start_ts)?)
+    }
+
+    pub fn next_row3(&mut self) -> Result<bool> {
+        Ok(self.reader.next_row3(self.start_ts)?)
+    }
+
     pub fn scan(&mut self, mut key: Key, limit: usize) -> Result<Vec<Result<KvPair>>> {
         let mut results = vec![];
         while results.len() < limit {

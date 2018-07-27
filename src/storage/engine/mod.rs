@@ -429,6 +429,7 @@ impl<I: Iterator> Cursor<I> {
     ///
     /// This method assume the current position of cursor is
     /// around `key`, otherwise you should `seek` first.
+    #[inline(never)]
     pub fn get(&mut self, key: &Key, statistics: &mut CFStatistics) -> Result<Option<&[u8]>> {
         if self.scan_mode != ScanMode::Backward {
             if self.near_seek(key, statistics)? && self.key(statistics) == &**key.encoded() {

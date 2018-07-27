@@ -143,15 +143,16 @@ pub fn encode_column_key(table_id: i64, handle: i64, column_id: i64) -> Vec<u8> 
 
 /// `decode_handle` decodes the key and gets the handle.
 pub fn decode_handle(encoded: &[u8]) -> Result<i64> {
-    if !encoded.starts_with(TABLE_PREFIX) {
+    //if !encoded.starts_with(TABLE_PREFIX) {
+    if encoded[0] != b't' {
         return Err(invalid_type!(
             "record key expected, but got {}",
             escape(encoded)
         ));
     }
 
-    let mut remaining = &encoded[TABLE_PREFIX.len()..];
-    number::decode_i64(&mut remaining)?;
+    let mut remaining = &encoded[TABLE_PREFIX.len() + 8..];
+    //number::decode_i64(&mut remaining)?;
 
     if !remaining.starts_with(RECORD_PREFIX_SEP) {
         return Err(invalid_type!(

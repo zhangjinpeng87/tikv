@@ -99,7 +99,7 @@ impl<S: Snapshot> Scanner<S> {
 
         let kv = match self.scan_mode {
             ScanMode::Backward => self.scanner.reverse_seek(Key::from_raw(&self.seek_key))?,
-            ScanMode::Forward => self.scanner.seek(Key::from_raw(&self.seek_key))?,
+            ScanMode::Forward => self.scanner.next_row()?,
             _ => unreachable!(),
         };
 
@@ -111,23 +111,12 @@ impl<S: Snapshot> Scanner<S> {
             }
         };
 
-        if self.range.start > key || self.range.end <= key {
-            panic!(
-                "key: {} out of range [{}, {})",
-                escape(&key),
-                escape(self.range.get_start()),
-                escape(self.range.get_end())
-            );
-        }
-
-        self.seek_key = match (self.scan_mode, self.scan_on) {
-            (ScanMode::Forward, _) => {
-                let mut seek_key = key.clone();
-                util::convert_to_prefix_next(&mut seek_key);
-                seek_key
+        match (self.scan_mode, self.scan_on) {
+            (ScanMode::Forward, _) => {}
+            (ScanMode::Backward, ScanOn::Table) => {
+                self.seek_key = box_try!(truncate_as_row_key(&key)).to_vec()
             }
-            (ScanMode::Backward, ScanOn::Table) => box_try!(truncate_as_row_key(&key)).to_vec(),
-            (ScanMode::Backward, ScanOn::Index) => key.clone(),
+            (ScanMode::Backward, ScanOn::Index) => self.seek_key = key.clone(),
             _ => unreachable!(),
         };
 

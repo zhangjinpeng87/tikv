@@ -88,6 +88,7 @@ impl Write {
         b
     }
 
+    #[inline(never)]
     pub fn parse(mut b: &[u8]) -> Result<Write> {
         if b.is_empty() {
             return Err(Error::BadFormatWrite);

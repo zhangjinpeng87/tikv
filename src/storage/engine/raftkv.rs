@@ -547,6 +547,7 @@ impl Snapshot for RegionSnapshot {
 }
 
 impl EngineIterator for RegionIterator {
+    #[inline]
     fn next(&mut self) -> bool {
         RegionIterator::next(self)
     }

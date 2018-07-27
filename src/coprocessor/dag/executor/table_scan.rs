@@ -85,7 +85,7 @@ impl<S: Snapshot> TableScanExecutor<S> {
 
     fn get_row_from_range_scanner(&mut self) -> Result<Option<Row>> {
         if let Some(scanner) = self.scanner.as_mut() {
-            self.metrics.scan_counter.inc_range();
+            //self.metrics.scan_counter.inc_range();
             let (key, value) = match scanner.next_row()? {
                 Some((key, value)) => (key, value),
                 None => return Ok(None),

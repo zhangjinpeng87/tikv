@@ -16,6 +16,8 @@ use super::write::{Write, WriteType};
 use super::{Error, Result};
 use kvproto::kvrpcpb::IsolationLevel;
 use raftstore::store::engine::IterOption;
+use std::mem::transmute;
+use std::ptr;
 use std::u64;
 use storage::engine::{Cursor, ScanMode, Snapshot, Statistics};
 use storage::{Key, Value, CF_LOCK, CF_WRITE};
@@ -46,6 +48,10 @@ pub struct MvccReader<S: Snapshot> {
     lower_bound: Option<Vec<u8>>,
     upper_bound: Option<Vec<u8>>,
     isolation_level: IsolationLevel,
+    inited_for_scan: bool,
+
+    cur_row_key: Vec<u8>,
+    cur_row_val: Vec<u8>,
 }
 
 impl<S: Snapshot> MvccReader<S> {
@@ -69,6 +75,9 @@ impl<S: Snapshot> MvccReader<S> {
             fill_cache,
             lower_bound,
             upper_bound,
+            inited_for_scan: false,
+            cur_row_key: Vec::with_capacity(4 * 1024),
+            cur_row_val: Vec::with_capacity(4 * 1024),
         }
     }
 
@@ -85,6 +94,7 @@ impl<S: Snapshot> MvccReader<S> {
         self.key_only = key_only;
     }
 
+    #[inline(never)]
     pub fn load_data(&mut self, key: &Key, ts: u64) -> Result<Value> {
         if self.key_only {
             return Ok(vec![]);
@@ -110,6 +120,36 @@ impl<S: Snapshot> MvccReader<S> {
 
         self.statistics.data.processed += 1;
         Ok(res)
+    }
+
+    fn load_row_data(&mut self, ts: u64) -> Result<()> {
+        if self.key_only {
+            Self::copy_to(&[], &mut self.cur_row_val);
+            return Ok(());
+        }
+        if self.scan_mode.is_some() && self.data_cursor.is_none() {
+            let iter_opt = IterOption::new(None, None, self.fill_cache);
+            self.data_cursor = Some(self.snapshot.iter(iter_opt, self.get_scan_mode(true))?);
+        }
+
+        let k = Key::from_encoded(self.row_key().to_owned()).append_ts(ts);
+        if let Some(ref mut cursor) = self.data_cursor {
+            match cursor.get(&k, &mut self.statistics.data)? {
+                None => panic!("key {:?} not found, ts {}", self.cur_row_key.as_slice(), ts),
+                Some(v) => Self::copy_to(v, &mut self.cur_row_val),
+            }
+        } else {
+            match self.snapshot.get(&k)? {
+                None => panic!(
+                    "key {:?} not found, ts: {}",
+                    self.cur_row_key.as_slice(),
+                    ts
+                ),
+                Some(v) => Self::copy_to(v.as_slice(), &mut self.cur_row_val),
+            }
+        }
+
+        Ok(())
     }
 
     pub fn load_lock(&mut self, key: &Key) -> Result<Option<Lock>> {
@@ -202,12 +242,12 @@ impl<S: Snapshot> MvccReader<S> {
 
     fn check_lock(&mut self, key: &Key, ts: u64) -> Result<u64> {
         if let Some(lock) = self.load_lock(key)? {
-            return self.check_lock_impl(key, ts, lock);
+            return Self::check_lock_impl(key, ts, lock);
         }
         Ok(ts)
     }
 
-    fn check_lock_impl(&self, key: &Key, ts: u64, lock: Lock) -> Result<u64> {
+    fn check_lock_impl(key: &Key, ts: u64, lock: Lock) -> Result<u64> {
         if lock.ts > ts || lock.lock_type == LockType::Lock {
             // ignore lock when lock.ts > ts or lock's type is Lock
             return Ok(ts);
@@ -337,6 +377,404 @@ impl<S: Snapshot> MvccReader<S> {
             ok = cursor.next(&mut self.statistics.write);
         }
         Ok(None)
+    }
+
+    pub fn row_key(&self) -> &[u8] {
+        self.cur_row_key.as_slice()
+    }
+
+    pub fn row_val(&self) -> &[u8] {
+        self.cur_row_val.as_slice()
+    }
+
+    #[inline(never)]
+    fn copy_to(from: &[u8], to: &mut Vec<u8>) {
+        if !to.is_empty() {
+            unsafe {
+                to.set_len(0);
+            }
+        }
+        if from.is_empty() {
+            return;
+        }
+        if to.capacity() < from.len() {
+            to.reserve(from.len());
+        }
+        to.extend_from_slice(from);
+    }
+
+    #[inline(never)]
+    fn is_same_row(key_with_ts: &[u8], row_key: &[u8]) -> bool {
+        let row_len = row_key.len();
+        // check length first.
+        if key_with_ts.len() == row_len + 8 {
+            if row_len > 8 {
+                // check tail 8 bytes
+                unsafe {
+                    let ks_ptr = transmute::<_, *const u64>(&key_with_ts[row_len - 8]);
+                    let rs_ptr = transmute::<_, *const u64>(&row_key[row_len - 8]);
+                    if *ks_ptr != *rs_ptr {
+                        return false;
+                    }
+                }
+            }
+            return key_with_ts.starts_with(row_key);
+        }
+        false
+    }
+
+    #[inline(never)]
+    pub fn next_row3(&mut self, ts: u64) -> Result<bool> {
+        assert!(*self.scan_mode.as_ref().unwrap() == ScanMode::Forward);
+        if !self.inited_for_scan {
+            self.create_write_cursor()?;
+            self.create_lock_cursor()?;
+            self.write_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.write);
+
+            self.lock_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.lock);
+
+            // Check locks ASAP
+            match self.isolation_level {
+                IsolationLevel::SI => {
+                    let mut l_cur = self.lock_cursor.as_mut().unwrap();
+                    while l_cur.valid() {
+                        let k = Key::from_encoded(l_cur.key().to_owned());
+                        Self::check_lock_impl(&k, ts, Lock::parse(l_cur.value())?)?;
+                        l_cur.next(&mut self.statistics.lock);
+                    }
+                }
+                IsolationLevel::RC => {}
+            }
+
+            self.inited_for_scan = true;
+        }
+
+        loop {
+            // Save current row key.
+            {
+                let w_cur = self.write_cursor.as_ref().unwrap();
+                if !w_cur.valid() {
+                    return Ok(false);
+                }
+                Self::copy_to(Key::truncate_ts_for(w_cur.key())?, &mut self.cur_row_key);
+            }
+
+            // Get current row content.
+            let mut need_forward_iter = false;
+            let mut got_val = false;
+            let mut need_to_check_is_same_row = false;
+            loop {
+                if need_to_check_is_same_row {
+                    let w_cur = self.write_cursor.as_ref().unwrap();
+                    if !w_cur.valid() || !Self::is_same_row(w_cur.key(), self.row_key()) {
+                        need_forward_iter = false;
+                        break;
+                    }
+                }
+                need_to_check_is_same_row = true;
+                need_forward_iter = true;
+                let commit_ts = Key::decode_ts_from(self.write_cursor.as_ref().unwrap().key())?;
+
+                if commit_ts <= ts {
+                    let mut write = Write::parse(self.write_cursor.as_ref().unwrap().value())?;
+                    match write.write_type {
+                        WriteType::Put => {
+                            if write.short_value.is_some() {
+                                if self.key_only {
+                                    Self::copy_to(&[], &mut self.cur_row_val);
+                                    got_val = true;
+                                } else {
+                                    Self::copy_to(
+                                        write.short_value.as_ref().unwrap().as_slice(),
+                                        &mut self.cur_row_val,
+                                    );
+                                    got_val = true;
+                                }
+                            } else {
+                                self.load_row_data(write.start_ts)?;
+                                got_val = true;
+                            }
+                            break;
+                        }
+                        WriteType::Delete => {
+                            break;
+                        }
+                        WriteType::Lock | WriteType::Rollback => {}
+                    }
+                }
+
+                // Check next version
+                self.write_cursor
+                    .as_mut()
+                    .unwrap()
+                    .next(&mut self.statistics.write);
+            }
+
+            // Move iterator to next row
+            if need_forward_iter {
+                let w_cur = self.write_cursor.as_mut().unwrap();
+                w_cur.next(&mut self.statistics.write);
+                while w_cur.valid() && Self::is_same_row(w_cur.key(), self.cur_row_key.as_slice()) {
+                    w_cur.next(&mut self.statistics.write);
+                }
+            }
+
+            if got_val {
+                return Ok(true);
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn next_row2(&mut self, ts: u64) -> Result<bool> {
+        assert!(*self.scan_mode.as_ref().unwrap() == ScanMode::Forward);
+        if !self.inited_for_scan {
+            self.create_write_cursor()?;
+            self.create_lock_cursor()?;
+            self.write_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.write);
+            self.lock_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.lock);
+            self.inited_for_scan = true;
+        }
+
+        loop {
+            let mut got_row_key_from_commit = true;
+            {
+                let w_cur = self.write_cursor.as_ref().unwrap();
+                let l_cur = self.lock_cursor.as_ref().unwrap();
+                let w_key = if w_cur.valid() {
+                    Some(w_cur.key())
+                } else {
+                    None
+                };
+                let l_key = if l_cur.valid() {
+                    Some(l_cur.key())
+                } else {
+                    None
+                };
+                match (w_key, l_key) {
+                    (None, None) => return Ok(false),
+                    (None, Some(l_k)) => {
+                        Self::copy_to(l_k, &mut self.cur_row_key);
+                        got_row_key_from_commit = false;
+                    }
+                    (Some(w_k), None) => {
+                        Self::copy_to(Key::truncate_ts_for(w_k)?, &mut self.cur_row_key);
+                    }
+                    (Some(w_k), Some(l_k)) => {
+                        if l_k < w_k {
+                            got_row_key_from_commit = false;
+                            Self::copy_to(l_k, &mut self.cur_row_key);
+                        } else {
+                            Self::copy_to(Key::truncate_ts_for(w_k)?, &mut self.cur_row_key)
+                        }
+                    }
+                }
+            }
+
+            // check lock
+            let (mut lock_need_forward, mut write_need_forward) = (false, false);
+            match self.isolation_level {
+                IsolationLevel::SI => {
+                    let l_cur = self.lock_cursor.as_ref().unwrap();
+                    if l_cur.valid() && l_cur.key() == self.row_key() {
+                        lock_need_forward = true;
+                        let k = Key::from_encoded(self.row_key().to_owned());
+                        Self::check_lock_impl(&k, ts, Lock::parse(l_cur.value())?)?;
+                    }
+                }
+                IsolationLevel::RC => {}
+            }
+
+            // get data for current row
+            let mut got_val = false;
+            let mut need_to_check_same_row = !got_row_key_from_commit;
+            loop {
+                if need_to_check_same_row {
+                    let w_cur = self.write_cursor.as_ref().unwrap();
+                    if !w_cur.valid() || !Self::is_same_row(w_cur.key(), self.row_key()) {
+                        write_need_forward = false;
+                        break;
+                    }
+                }
+                need_to_check_same_row = true;
+                write_need_forward = true;
+                let commit_ts = Key::decode_ts_from(self.write_cursor.as_ref().unwrap().key())?;
+
+                if commit_ts <= ts {
+                    let mut write = Write::parse(self.write_cursor.as_ref().unwrap().value())?;
+                    match write.write_type {
+                        WriteType::Put => {
+                            if write.short_value.is_some() {
+                                if self.key_only {
+                                    Self::copy_to(&[], &mut self.cur_row_val);
+                                    got_val = true;
+                                } else {
+                                    Self::copy_to(
+                                        write.short_value.as_ref().unwrap().as_slice(),
+                                        &mut self.cur_row_val,
+                                    );
+                                    got_val = true;
+                                }
+                            } else {
+                                self.load_row_data(write.start_ts)?;
+                                got_val = true;
+                            }
+                            break;
+                        }
+                        WriteType::Delete => {
+                            break;
+                        }
+                        WriteType::Lock | WriteType::Rollback => {}
+                    }
+                }
+
+                // Check next version
+                self.write_cursor
+                    .as_mut()
+                    .unwrap()
+                    .next(&mut self.statistics.write);
+            }
+
+            // Move iterator to next row
+            if write_need_forward {
+                let w_cur = self.write_cursor.as_mut().unwrap();
+                w_cur.next(&mut self.statistics.write);
+                loop {
+                    if w_cur.valid() && Self::is_same_row(w_cur.key(), self.cur_row_key.as_slice())
+                    {
+                        w_cur.next(&mut self.statistics.write);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if lock_need_forward {
+                self.lock_cursor
+                    .as_mut()
+                    .unwrap()
+                    .next(&mut self.statistics.lock);
+            }
+
+            if got_val {
+                return Ok(true);
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn next_row(&mut self, ts: u64) -> Result<Option<(Key, Value)>> {
+        assert!(*self.scan_mode.as_ref().unwrap() == ScanMode::Forward);
+        if !self.inited_for_scan {
+            self.create_write_cursor()?;
+            self.create_lock_cursor()?;
+            self.write_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.write);
+            self.lock_cursor
+                .as_mut()
+                .unwrap()
+                .seek_to_first(&mut self.statistics.lock);
+
+            // Check locks ASAP
+            match self.isolation_level {
+                IsolationLevel::SI => {
+                    let mut l_cur = self.lock_cursor.as_mut().unwrap();
+                    while l_cur.valid() {
+                        let k = Key::from_encoded(l_cur.key().to_owned());
+                        Self::check_lock_impl(&k, ts, Lock::parse(l_cur.value())?)?;
+                        l_cur.next(&mut self.statistics.lock);
+                    }
+                }
+                IsolationLevel::RC => {}
+            }
+
+            self.inited_for_scan = true;
+        }
+
+        loop {
+            // Save current row key.
+            let user_key = {
+                let w_cur = self.write_cursor.as_ref().unwrap();
+                if !w_cur.valid() {
+                    return Ok(None);
+                }
+                Key::from_encoded_slice(Key::truncate_ts_for(w_cur.key())?)
+            };
+
+            // Get current row content.
+            let mut need_forward_iter = false;
+            let mut got_val = None;
+            let mut need_to_check_is_same_row = false;
+            loop {
+                if need_to_check_is_same_row {
+                    let w_cur = self.write_cursor.as_ref().unwrap();
+                    if !w_cur.valid()
+                        || !Self::is_same_row(w_cur.key(), user_key.encoded().as_slice())
+                    {
+                        need_forward_iter = false;
+                        break;
+                    }
+                }
+                need_to_check_is_same_row = true;
+                need_forward_iter = true;
+                let commit_ts = Key::decode_ts_from(self.write_cursor.as_ref().unwrap().key())?;
+
+                if commit_ts <= ts {
+                    let mut write = Write::parse(self.write_cursor.as_ref().unwrap().value())?;
+                    match write.write_type {
+                        WriteType::Put => {
+                            if write.short_value.is_some() {
+                                if self.key_only {
+                                    got_val = Some(vec![]);
+                                } else {
+                                    got_val = write.short_value.take();
+                                }
+                            } else {
+                                got_val = Some(self.load_data(&user_key, write.start_ts)?);
+                            }
+                            break;
+                        }
+                        WriteType::Delete => {
+                            break;
+                        }
+                        WriteType::Lock | WriteType::Rollback => {}
+                    }
+                }
+
+                // Check next version
+                self.write_cursor
+                    .as_mut()
+                    .unwrap()
+                    .next(&mut self.statistics.write);
+            }
+
+            // Move iterator to next row
+            if need_forward_iter {
+                let w_cur = self.write_cursor.as_mut().unwrap();
+                w_cur.next(&mut self.statistics.write);
+                while w_cur.valid() && Self::is_same_row(w_cur.key(), user_key.encoded().as_slice())
+                {
+                    w_cur.next(&mut self.statistics.write);
+                }
+            }
+
+            if got_val.is_some() {
+                return Ok(Some((user_key, got_val.unwrap())));
+            }
+        }
     }
 
     pub fn seek(&mut self, mut key: Key, ts: u64) -> Result<Option<(Key, Value)>> {
