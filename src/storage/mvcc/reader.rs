@@ -471,8 +471,12 @@ impl<S: Snapshot> MvccReader<S> {
             let mut need_to_check_is_same_row = false;
             loop {
                 if need_to_check_is_same_row {
-                    let w_cur = self.write_cursor.as_ref().unwrap();
-                    if !w_cur.valid() || !Self::is_same_row(w_cur.key(), self.row_key()) {
+                    let w_cur = self.write_cursor.as_mut().unwrap();
+                    if !w_cur.valid()
+                        || !Self::is_same_row(
+                            w_cur.key(&mut self.statistics.write),
+                            self.cur_row_key.as_slice(),
+                        ) {
                         need_forward_iter = false;
                         break;
                     }
@@ -587,11 +591,17 @@ impl<S: Snapshot> MvccReader<S> {
             let (mut lock_need_forward, mut write_need_forward) = (false, false);
             match self.isolation_level {
                 IsolationLevel::SI => {
-                    let l_cur = self.lock_cursor.as_ref().unwrap();
-                    if l_cur.valid() && l_cur.key() == self.row_key() {
+                    let l_cur = self.lock_cursor.as_mut().unwrap();
+                    if l_cur.valid()
+                        && l_cur.key(&mut self.statistics.lock) == self.cur_row_key.as_slice()
+                    {
                         lock_need_forward = true;
-                        let k = Key::from_encoded(self.row_key().to_owned());
-                        Self::check_lock_impl(&k, ts, Lock::parse(l_cur.value())?)?;
+                        let k = Key::from_encoded(self.cur_row_key.as_slice().to_owned());
+                        Self::check_lock_impl(
+                            &k,
+                            ts,
+                            Lock::parse(l_cur.value(&mut self.statistics.lock))?,
+                        )?;
                     }
                 }
                 IsolationLevel::RC => {}
@@ -602,8 +612,12 @@ impl<S: Snapshot> MvccReader<S> {
             let mut need_to_check_same_row = !got_row_key_from_commit;
             loop {
                 if need_to_check_same_row {
-                    let w_cur = self.write_cursor.as_ref().unwrap();
-                    if !w_cur.valid() || !Self::is_same_row(w_cur.key(), self.row_key()) {
+                    let w_cur = self.write_cursor.as_mut().unwrap();
+                    if !w_cur.valid()
+                        || !Self::is_same_row(
+                            w_cur.key(&mut self.statistics.write),
+                            self.cur_row_key.as_slice(),
+                        ) {
                         write_need_forward = false;
                         break;
                     }
