@@ -79,7 +79,7 @@ impl MvccReader {
 
     pub fn load_data(&mut self, key: &Key, ts: u64) -> Result<Option<Value>> {
         if self.key_only {
-            return Ok(vec![]);
+            return Ok(Some(vec![]));
         }
         if self.scan_mode.is_some() && self.data_cursor.is_none() {
             let iter_opt = IterOption::new(None, None, self.fill_cache);
@@ -93,7 +93,7 @@ impl MvccReader {
                     warn!("key {} not found, ts {}", key, ts);
                     None
                 }
-                Some(v) => v.to_vec(),
+                Some(v) => Some(v.to_vec()),
             }
         } else {
             self.statistics.data.get += 1;
@@ -102,7 +102,7 @@ impl MvccReader {
                     warn!("key {} not found, ts: {}", key, ts);
                     None
                 }
-                Some(v) => v,
+                Some(v) => Some(v),
             }
         };
 
