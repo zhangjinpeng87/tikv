@@ -89,13 +89,19 @@ impl MvccReader {
         let k = key.append_ts(ts);
         let res = if let Some(ref mut cursor) = self.data_cursor {
             match cursor.get(&k, &mut self.statistics.data)? {
-                None => panic!("key {} not found, ts {}", key, ts),
+                None => {
+                    warn!("key {} not found, ts {}", key, ts);
+                    None
+                }
                 Some(v) => v.to_vec(),
             }
         } else {
             self.statistics.data.get += 1;
             match self.snapshot.get(&k)? {
-                None => panic!("key {} not found, ts: {}", key, ts),
+                None => {
+                    warn!("key {} not found, ts: {}", key, ts);
+                    None
+                }
                 Some(v) => v,
             }
         };
