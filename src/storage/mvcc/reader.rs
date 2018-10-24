@@ -77,7 +77,7 @@ impl MvccReader {
         self.key_only = key_only;
     }
 
-    pub fn load_data(&mut self, key: &Key, ts: u64) -> Result<Value> {
+    pub fn load_data(&mut self, key: &Key, ts: u64) -> Result<Option<Value>> {
         if self.key_only {
             return Ok(vec![]);
         }
@@ -91,7 +91,7 @@ impl MvccReader {
             match cursor.get(&k, &mut self.statistics.data)? {
                 None => {
                     warn!("key {} not found, ts {}", key, ts);
-                    return None;
+                    None
                 }
                 Some(v) => v.to_vec(),
             }
@@ -100,14 +100,15 @@ impl MvccReader {
             match self.snapshot.get(&k)? {
                 None => {
                     warn!("key {} not found, ts: {}", key, ts);
-                    return None;
+                    None
                 }
                 Some(v) => v,
             }
         };
 
         self.statistics.data.processed += 1;
-        self.statistics.data.flow_stats.read_bytes += k.raw().unwrap_or_default().len() + res.len();
+        self.statistics.data.flow_stats.read_bytes +=
+            k.raw().unwrap_or_default().len() + res.map_or(0, |v| v.len());
         self.statistics.data.flow_stats.read_keys += 1;
         Ok(res)
     }
@@ -240,7 +241,7 @@ impl MvccReader {
                             }
                             return Ok(write.short_value.take());
                         }
-                        return self.load_data(key, write.start_ts).map(Some);
+                        return self.load_data(key, write.start_ts);
                     }
                     WriteType::Delete => {
                         return Ok(None);
