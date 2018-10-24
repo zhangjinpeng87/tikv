@@ -91,7 +91,7 @@ impl MvccReader {
             match cursor.get(&k, &mut self.statistics.data)? {
                 None => {
                     warn!("key {} not found, ts {}", key, ts);
-                    None
+                    return None;
                 }
                 Some(v) => v.to_vec(),
             }
@@ -100,7 +100,7 @@ impl MvccReader {
             match self.snapshot.get(&k)? {
                 None => {
                     warn!("key {} not found, ts: {}", key, ts);
-                    None
+                    return None;
                 }
                 Some(v) => v,
             }
