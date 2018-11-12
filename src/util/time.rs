@@ -89,7 +89,7 @@ impl SlowTimer {
     }
 }
 
-const DEFAULT_SLOW_MILLIS: u64 = 100;
+const DEFAULT_SLOW_MILLIS: u64 = 30;
 
 impl Default for SlowTimer {
     fn default() -> SlowTimer {
