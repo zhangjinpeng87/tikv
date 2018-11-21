@@ -1497,7 +1497,11 @@ impl Peer {
         }
 
         let last_index = self.get_store().last_index();
-        last_index <= status.progress[&peer_id].matched + self.cfg.leader_transfer_max_log_lag
+        let first_index = self.get_store().first_index();
+
+        status.progress[&peer_id].matched >= first_index
+            && last_index
+                <= status.progress[&peer_id].matched + self.cfg.leader_transfer_max_log_lag
     }
 
     fn read_local(&mut self, req: RaftCmdRequest, cb: Callback, metrics: &mut RaftProposeMetrics) {
