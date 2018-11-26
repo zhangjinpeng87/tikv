@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{error, result};
+use std::u64;
 
 use byteorder::{BigEndian, ByteOrder};
 
@@ -204,10 +205,7 @@ impl Debugger {
         let raft_log_min_key = keys::region_raft_prefix(0).to_vec();
         let raft_log_max_key = keys::region_raft_prefix(u64::MAX).to_vec();
 
-        let mut iter_opt = IterOption::new();
-        iter_opt.set_lower_bound(raft_log_min_key);
-        iter_opt.set_upper_bound(raft_log_max_key);
-
+        let mut iter_opt = IterOption::new(Some(raft_log_min_key), Some(raft_log_max_key), true);
         let mut iter = self.engines.raft.new_iterator(iter_opt);
         if !iter.seek(SeekKey::Start) {
             println!("seek to first return false");
@@ -220,7 +218,7 @@ impl Debugger {
         let mut size = 0;
         while iter.valid() {
             let key = iter.key();
-            let cur_region_id = BigEndian::read_u64(key[2..10]);
+            let cur_region_id = BigEndian::read_u64(&key[2..10]);
 
             if region_id != 0 && region_id != cur_region_id {
                 result.push((region_id, count, size));
@@ -238,7 +236,7 @@ impl Debugger {
         }
         result.push((region_id, count, size));
 
-        result.iter().for_each(|(_, (region_id, count, size))| {
+        result.iter().for_each(|(region_id, count, size)| {
             println!("region {}, count {}, size {}", region_id, count, size)
         });
     }
