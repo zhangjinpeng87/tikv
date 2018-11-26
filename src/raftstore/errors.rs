@@ -148,6 +148,7 @@ pub type Result<T> = result::Result<T, Error>;
 impl Into<errorpb::Error> for Error {
     fn into(self) -> errorpb::Error {
         let mut errorpb = errorpb::Error::new();
+
         errorpb.set_message(error::Error::description(&self).to_owned());
 
         match self {

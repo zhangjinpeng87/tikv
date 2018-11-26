@@ -191,6 +191,8 @@ trait DebugExecutor {
         }
     }
 
+    fn stat_raft_log(&self);
+
     fn dump_raft_log(&self, region: u64, index: u64) {
         let idx_key = keys::raft_log_key(region, index);
         println!("idx_key: {}", escape(&idx_key));
@@ -611,6 +613,10 @@ impl DebugExecutor for DebugClient {
             .take_entry()
     }
 
+    fn stat_raft_log(&self) {
+        println!("stat raft log only support local mode");
+    }
+
     fn get_mvcc_infos(
         &self,
         from: Vec<u8>,
@@ -752,6 +758,10 @@ impl DebugExecutor for Debugger {
     fn get_raft_log(&self, region: u64, index: u64) -> Entry {
         self.raft_log(region, index)
             .unwrap_or_else(|e| perror_and_exit("Debugger::raft_log", e))
+    }
+
+    fn stat_raft_log(&self) {
+        self.print_stat_raft_log();
     }
 
     fn get_mvcc_infos(
@@ -1013,6 +1023,9 @@ fn main() {
                                 .takes_value(true)
                                 .help(raw_key_hint)
                         ),
+                )
+                .subcommand(
+                    SubCommand::with_name("stat-log").about("statistic the size of log entrires for each region"),
                 )
                 .subcommand(
                     SubCommand::with_name("region")
@@ -1636,6 +1649,8 @@ fn main() {
             } else {
                 debug_executor.dump_all_region_info(skip_tombstone);
             }
+        } else if let Some(matches) = matches.subcommand_matches("stat-log") {
+            debug_executor.stat_raft_log();
         } else {
             let _ = app.print_help();
         }

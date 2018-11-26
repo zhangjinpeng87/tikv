@@ -19,6 +19,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{error, result};
 
+use byteorder::{BigEndian, ByteOrder};
+
 use protobuf::{self, Message, RepeatedField};
 
 use kvproto::debugpb::{self, DB as DBType, *};
@@ -196,6 +198,49 @@ impl Debugger {
             ))),
             Err(e) => Err(box_err!(e)),
         }
+    }
+
+    pub fn print_stat_raft_log(&self) {
+        let raft_log_min_key = keys::region_raft_prefix(0).to_vec();
+        let raft_log_max_key = keys::region_raft_prefix(u64::MAX).to_vec();
+
+        let mut iter_opt = IterOption::new();
+        iter_opt.set_lower_bound(raft_log_min_key);
+        iter_opt.set_upper_bound(raft_log_max_key);
+
+        let mut iter = self.engines.raft.new_iterator(iter_opt);
+        if !iter.seek(SeekKey::Start) {
+            println!("seek to first return false");
+            return;
+        }
+
+        let mut result = vec![];
+        let mut region_id = 0;
+        let mut count = 0;
+        let mut size = 0;
+        while iter.valid() {
+            let key = iter.key();
+            let cur_region_id = BigEndian::read_u64(key[2..10]);
+
+            if region_id != 0 && region_id != cur_region_id {
+                result.push((region_id, count, size));
+                count = 1;
+                size = iter.value().len();
+                region_id = cur_region_id;
+            } else {
+                count += 1;
+                size += iter.value().len();
+                if region_id == 0 {
+                    region_id = cur_region_id;
+                }
+            }
+            iter.next();
+        }
+        result.push((region_id, count, size));
+
+        result.iter().for_each(|(_, (region_id, count, size))| {
+            println!("region {}, count {}, size {}", region_id, count, size)
+        });
     }
 
     pub fn region_info(&self, region_id: u64) -> Result<RegionInfo> {
