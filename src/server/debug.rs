@@ -219,7 +219,7 @@ impl Debugger {
         while iter.valid() {
             let cur_region_id = {
                 let key = iter.key();
-                BigEndian::read_u64(&key[2..10]);
+                BigEndian::read_u64(&key[2..10])
             };
 
             if region_id != 0 && region_id != cur_region_id {
