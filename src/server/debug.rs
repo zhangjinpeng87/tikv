@@ -205,7 +205,7 @@ impl Debugger {
         let raft_log_min_key = keys::region_raft_prefix(0).to_vec();
         let raft_log_max_key = keys::region_raft_prefix(u64::MAX).to_vec();
 
-        let mut iter_opt = IterOption::new(Some(raft_log_min_key), Some(raft_log_max_key), true);
+        let iter_opt = IterOption::new(Some(raft_log_min_key), Some(raft_log_max_key), true);
         let mut iter = self.engines.raft.new_iterator(iter_opt);
         if !iter.seek(SeekKey::Start) {
             println!("seek to first return false");
@@ -217,8 +217,10 @@ impl Debugger {
         let mut count = 0;
         let mut size = 0;
         while iter.valid() {
-            let key = iter.key();
-            let cur_region_id = BigEndian::read_u64(&key[2..10]);
+            let cur_region_id = {
+                let key = iter.key();
+                BigEndian::read_u64(&key[2..10]);
+            };
 
             if region_id != 0 && region_id != cur_region_id {
                 result.push((region_id, count, size));
