@@ -72,8 +72,11 @@ use tikv::raftstore::store::{new_compaction_listener, Engines, SnapManagerBuilde
 use tikv::server::readpool::ReadPool;
 use tikv::server::resolve;
 use tikv::server::status_server::StatusServer;
-use tikv::server::transport::ServerRaftStoreRouter;
-use tikv::server::{create_raft_storage, Node, Server, DEFAULT_CLUSTER_ID};
+use tikv::server::transport::{MockRaftStoreRouter, ServerRaftStoreRouter};
+use tikv::server::{
+    create_raft_storage, create_rocksdb_storage, Node, Server, SingleNode, DEFAULT_CLUSTER_ID,
+};
+use tikv::storage::engine::rocksdb_engine::RocksEngineRegionProvider;
 use tikv::storage::{self, AutoGCConfig, DEFAULT_ROCKSDB_SUB_DIR};
 use tikv::util::rocksdb_util::metrics_flusher::{MetricsFlusher, DEFAULT_FLUSHER_INTERVAL};
 use tikv::util::security::SecurityManager;
@@ -109,6 +112,133 @@ fn check_system_config(config: &TiKvConfig) {
         warn!(
             "raft check data dir";
             "err" => %e
+        );
+    }
+}
+
+fn run_standalone_server(
+    pd_client: RpcClient,
+    cfg: &TiKvConfig,
+    security_mgr: Arc<SecurityManager>,
+) {
+    let store_path = Path::new(&cfg.storage.data_dir);
+    let lock_path = store_path.join(Path::new("LOCK"));
+    let db_path = store_path.join(Path::new(DEFAULT_ROCKSDB_SUB_DIR));
+    let import_path = store_path.join("import");
+
+    let f = File::create(lock_path.as_path())
+        .unwrap_or_else(|e| fatal!("failed to create lock at {}: {}", lock_path.display(), e));
+    if f.try_lock_exclusive().is_err() {
+        fatal!(
+            "lock {} failed, maybe another instance is using this directory.",
+            store_path.display()
+        );
+    }
+
+    // Create router.
+    let raft_router = MockRaftStoreRouter::new();
+
+    // Create pd client and pd worker
+    let pd_client = Arc::new(pd_client);
+    let pd_worker = FutureWorker::new("pd-worker");
+    let (mut worker, resolver) = resolve::new_resolver(Arc::clone(&pd_client))
+        .unwrap_or_else(|e| fatal!("failed to start address resolver: {}", e));
+    let pd_sender = pd_worker.scheduler();
+
+    // Create kv engine, storage.
+    let mut kv_db_opts = cfg.rocksdb.build_opt();
+    kv_db_opts.add_event_listener(compaction_listener);
+    let kv_cfs_opts = cfg.rocksdb.build_cf_opts();
+    let kv_engine = Arc::new(
+        rocksdb_util::new_engine_opt(db_path.to_str().unwrap(), kv_db_opts, kv_cfs_opts)
+            .unwrap_or_else(|s| fatal!("failed to create kv engine: {}", s)),
+    );
+    let storage_read_pool =
+        ReadPool::new("store-read", &cfg.readpool.storage.build_config(), || {
+            storage::ReadPoolContext::new(pd_sender.clone())
+        });
+    let storage = create_rocksdb_storage(&cfg.storage, storage_read_pool, Arc::clone(&kv_engine))
+        .unwrap_or_else(|e| fatal!("failed to create rocksdb stroage: {}", e));;
+
+    let server_cfg = Arc::new(cfg.server.clone());
+    // Create server
+    let cop_read_pool = ReadPool::new("cop", &cfg.readpool.coprocessor.build_config(), || {
+        coprocessor::ReadPoolContext::new(pd_sender.clone())
+    });
+    let cop = coprocessor::Endpoint::new(&server_cfg, storage.get_engine(), cop_read_pool);
+
+    // Create snapshot manager, server.
+    let snap_mgr = SnapManagerBuilder::default()
+        .max_write_bytes_per_sec(cfg.server.snap_max_write_bytes_per_sec.0)
+        .max_total_size(cfg.server.snap_max_total_size.0)
+        .build("./temp/snap", None);
+
+    let mut server = Server::new(
+        &server_cfg,
+        &security_mgr,
+        storage.clone(),
+        cop,
+        raft_router,
+        resolver,
+        snap_mgr,
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| fatal!("failed to create server: {}", e));
+
+    // Create node.
+    let mut node = SingleNode::new(&server_cfg, &cfg.raft_store, pd_client.clone());
+
+    node.start(Arc::clone(&kv_engine), pd_worker)
+        .unwrap_or_else(|e| fatal!("failed to start node: {}", e));
+    initial_metric(&cfg.metric, Some(node.id()));
+
+    let region_info_accessor = RocksEngineRegionProvider::new();
+
+    // Start auto gc
+    let auto_gc_cfg = AutoGCConfig::new(pd_client, region_info_accessor, node.id());
+    if let Err(e) = storage.start_auto_gc(auto_gc_cfg) {
+        fatal!("failed to start auto_gc on storage, error: {}", e);
+    }
+
+    // Run server.
+    server
+        .start(server_cfg, security_mgr)
+        .unwrap_or_else(|e| fatal!("failed to start server: {}", e));
+
+    let server_cfg = cfg.server.clone();
+    let mut status_enabled = cfg.metric.address.is_empty() && !server_cfg.status_addr.is_empty();
+
+    // Create a status server.
+    let mut status_server = StatusServer::new(server_cfg.status_thread_pool_size);
+    if status_enabled {
+        // Start the status server.
+        if let Err(e) = status_server.start(server_cfg.status_addr) {
+            error!(
+                "failed to bind addr for status service";
+            "err" => %e
+            );
+            status_enabled = false;
+        }
+    }
+
+    // Stop.
+    server
+        .stop()
+        .unwrap_or_else(|e| fatal!("failed to stop server: {}", e));
+
+    if status_enabled {
+        // Stop the status server.
+        status_server.stop()
+    }
+
+    node.stop()
+        .unwrap_or_else(|e| fatal!("failed to stop node: {}", e));
+
+    if let Some(Err(e)) = worker.stop().map(|j| j.join()) {
+        info!(
+            "ignore failure when stopping resolver";
+            "err" => ?e
         );
     }
 }

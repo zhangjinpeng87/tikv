@@ -23,14 +23,16 @@ pub mod node;
 pub mod readpool;
 pub mod resolve;
 pub mod server;
+pub mod single_node;
 pub mod snap;
 pub mod status_server;
 pub mod transport;
 
 pub use self::config::{Config, DEFAULT_CLUSTER_ID, DEFAULT_LISTENING_ADDR};
 pub use self::errors::{Error, Result};
-pub use self::node::{create_raft_storage, Node};
+pub use self::node::{create_raft_storage, create_rocksdb_storage, Node};
 pub use self::raft_client::RaftClient;
 pub use self::resolve::{PdStoreAddrResolver, StoreAddrResolver};
 pub use self::server::Server;
+pub use self::single_node::SingleNode;
 pub use self::transport::{ServerRaftStoreRouter, ServerTransport};

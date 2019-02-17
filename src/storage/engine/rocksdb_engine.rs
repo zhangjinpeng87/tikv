@@ -28,8 +28,8 @@ use crate::util::rocksdb_util::{self, CFOptions};
 use crate::util::worker::{Runnable, Scheduler, Worker};
 
 use super::{
-    Callback, CbContext, Cursor, Engine, Error, Iterator as EngineIterator, Modify, Result,
-    ScanMode, Snapshot,
+    Callback, CbContext, Cursor, Engine, Error, Iterator as EngineIterator, Modify,
+    RegionInfoProvider, Result, ScanMode, Snapshot,
 };
 
 pub use crate::raftstore::store::engine::SyncSnapshot as RocksSnapshot;
@@ -105,6 +105,19 @@ impl RocksEngine {
         Ok(RocksEngine {
             sched: worker.scheduler(),
             core: Arc::new(Mutex::new(RocksEngineCore { temp_dir, worker })),
+            db,
+        })
+    }
+
+    pub fn new_from_db(db: Arc<DB>) -> Result<RocksEngine> {
+        let mut worker = Worker::new("engine-rocksdb");
+        box_try!(worker.start(Runner(Arc::clone(&db))));
+        Ok(RocksEngine {
+            sched: worker.scheduler(),
+            core: Arc::new(Mutex::new(RocksEngineCore {
+                temp_dir: None,
+                worker,
+            })),
             db,
         })
     }
@@ -325,6 +338,25 @@ impl<D: Deref<Target = DB> + Send> EngineIterator for DBIterator<D> {
 
     fn value(&self) -> &[u8] {
         DBIterator::value(self)
+    }
+}
+
+pub struct RocksEngineRegionProvider {}
+
+impl RocksEngineRegionProvider {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl RegionInfoProvider for RocksEngineRegionProvider {
+    fn seek_region(
+        &self,
+        from: &[u8],
+        filter: SeekRegionFilter,
+        limit: u32,
+    ) -> Result<SeekRegionResult> {
+        Ok()
     }
 }
 

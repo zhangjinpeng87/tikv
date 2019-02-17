@@ -147,6 +147,38 @@ impl RaftStoreRouter for ServerRaftStoreRouter {
     }
 }
 
+/// A mock router used in stand alone mode
+#[derive(Clone)]
+pub struct MockRaftStoreRouter {}
+
+impl MockRaftStoreRouter {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl RaftStoreRouter for MockRaftStoreRouter {
+    fn try_send(&self, msg: StoreMsg) -> RaftStoreResult<()> {
+        Ok(())
+    }
+
+    fn send(&self, msg: StoreMsg) -> RaftStoreResult<()> {
+        Ok(())
+    }
+
+    fn send_raft_msg(&self, msg: RaftMessage) -> RaftStoreResult<()> {
+        Ok(())
+    }
+
+    fn send_command(&self, req: RaftCmdRequest, cb: Callback) -> RaftStoreResult<()> {
+        Ok(())
+    }
+
+    fn significant_send(&self, region_id: u64, msg: SignificantMsg) -> RaftStoreResult<()> {
+        Ok(())
+    }
+}
+
 pub struct ServerTransport<T, S>
 where
     T: RaftStoreRouter + 'static,
