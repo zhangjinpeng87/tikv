@@ -125,7 +125,7 @@ git = "https://github.com/pingcap/murmur3.git"
 
 [dependencies.rocksdb]
 git = "https://github.com/zhangjinpeng1987/rust-rocksdb.git"
-branch = "guards"
+branch = "guards-level0"
 
 [dependencies.prometheus]
 version = "0.4.2"

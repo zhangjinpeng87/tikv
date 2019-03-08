@@ -21,4 +21,4 @@ slog-global = { version = "0.1", git = "https://github.com/breeswish/slog-global
 
 [dependencies.rocksdb]
 git = "https://github.com/zhangjinpeng1987/rust-rocksdb.git"
-branch = "guards"
+branch = "guards-level0"
