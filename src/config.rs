@@ -187,7 +187,7 @@ macro_rules! build_cf_opt {
         let compression_per_level = $opt.compression_per_level[..$opt.num_levels as usize].to_vec();
         cf_opts.compression_per_level(compression_per_level.as_slice());
         cf_opts.set_write_buffer_size($opt.write_buffer_size.0);
-        cf_opts.set_level0_split_size(&opt.level0_split_size.0);
+        cf_opts.set_level_zero_split_size($opt.level0_split_size.0);
         cf_opts.set_max_write_buffer_number($opt.max_write_buffer_number);
         cf_opts.set_min_write_buffer_number_to_merge($opt.min_write_buffer_number_to_merge);
         cf_opts.set_max_bytes_for_level_base($opt.max_bytes_for_level_base.0);
@@ -357,7 +357,7 @@ impl Default for LockCfConfig {
             read_amp_bytes_per_bit: 0,
             compression_per_level: [DBCompressionType::No; 7],
             write_buffer_size: ReadableSize::mb(128),
-            level0_split_size: 0,
+            level0_split_size: ReadableSize::mb(0),
             max_write_buffer_number: 5,
             min_write_buffer_number_to_merge: 1,
             max_bytes_for_level_base: ReadableSize::mb(128),
@@ -412,7 +412,7 @@ impl Default for RaftCfConfig {
             read_amp_bytes_per_bit: 0,
             compression_per_level: [DBCompressionType::No; 7],
             write_buffer_size: ReadableSize::mb(128),
-            level0_split_size: 0,
+            level0_split_size: ReadableSize::mb(0),
             max_write_buffer_number: 5,
             min_write_buffer_number_to_merge: 1,
             max_bytes_for_level_base: ReadableSize::mb(128),
@@ -636,7 +636,7 @@ impl Default for RaftDefaultCfConfig {
                 DBCompressionType::Zstd,
             ],
             write_buffer_size: ReadableSize::mb(128),
-            level0_split_size: 0,
+            level0_split_size: ReadableSize::mb(0),
             max_write_buffer_number: 5,
             min_write_buffer_number_to_merge: 1,
             max_bytes_for_level_base: ReadableSize::mb(512),
