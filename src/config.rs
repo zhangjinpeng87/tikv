@@ -669,6 +669,56 @@ impl RaftDefaultCfConfig {
     }
 }
 
+cf_config!(RaftRaftCfConfig);
+
+impl Default for RaftRaftCfConfig {
+    fn default() -> RaftRaftCfConfig {
+        let mut titan = TitanCfConfig::default();
+        titan.min_blob_size = ReadableSize::gb(4).0 as u64;
+        RaftRaftCfConfig {
+            block_size: ReadableSize::kb(16),
+            block_cache_size: ReadableSize::mb(128),
+            disable_block_cache: false,
+            cache_index_and_filter_blocks: true,
+            pin_l0_filter_and_index_blocks: true,
+            use_bloom_filter: true,
+            optimize_filters_for_hits: true,
+            whole_key_filtering: true,
+            bloom_filter_bits_per_key: 10,
+            block_based_bloom_filter: false,
+            read_amp_bytes_per_bit: 0,
+            compression_per_level: [DBCompressionType::No; 7],
+            write_buffer_size: ReadableSize::mb(128),
+            level0_split_size: ReadableSize::mb(0),
+            max_write_buffer_number: 5,
+            min_write_buffer_number_to_merge: 1,
+            max_bytes_for_level_base: ReadableSize::mb(128),
+            target_file_size_base: ReadableSize::mb(8),
+            level0_file_num_compaction_trigger: 1,
+            level0_slowdown_writes_trigger: 20,
+            level0_stop_writes_trigger: 36,
+            max_compaction_bytes: ReadableSize::gb(2),
+            compaction_pri: CompactionPriority::ByCompensatedSize,
+            dynamic_level_bytes: true,
+            num_levels: 7,
+            max_bytes_for_level_multiplier: 10,
+            compaction_style: DBCompactionStyle::Level,
+            disable_auto_compactions: false,
+            soft_pending_compaction_bytes_limit: ReadableSize::gb(64),
+            hard_pending_compaction_bytes_limit: ReadableSize::gb(256),
+            titan,
+        }
+    }
+}
+
+impl RaftRaftCfConfig {
+    pub fn build_opt(&self) -> ColumnFamilyOptions {
+        let mut cf_opts = build_cf_opt!(self);
+        cf_opts.set_titandb_options(&self.titan.build_opts());
+        cf_opts
+    }
+}
+
 // RocksDB Env associate thread pools of multiple instances from the same process.
 // When construct Options, options.env is set to same singleton Env::Default() object.
 // So total max_background_jobs = max(rocksdb.max_background_jobs, raftdb.max_background_jobs)
@@ -702,6 +752,7 @@ pub struct RaftDbConfig {
     pub bytes_per_sync: ReadableSize,
     pub wal_bytes_per_sync: ReadableSize,
     pub defaultcf: RaftDefaultCfConfig,
+    pub raftcf: RaftRaftCfConfig,
 }
 
 impl Default for RaftDbConfig {
@@ -731,6 +782,7 @@ impl Default for RaftDbConfig {
             bytes_per_sync: ReadableSize::mb(1),
             wal_bytes_per_sync: ReadableSize::kb(512),
             defaultcf: RaftDefaultCfConfig::default(),
+            raftcf: RaftRaftCfConfig::default(),
         }
     }
 }
@@ -780,7 +832,7 @@ impl RaftDbConfig {
     }
 
     pub fn build_cf_opts(&self) -> Vec<CFOptions> {
-        vec![CFOptions::new(CF_DEFAULT, self.defaultcf.build_opt())]
+        vec![CFOptions::new(CF_DEFAULT, self.defaultcf.build_opt()), CFOptions::new(CF_RAFT, self.raftcf.build_opt())]
     }
 }
 

@@ -330,8 +330,9 @@ impl InvokeContext {
     }
 
     #[inline]
-    pub fn save_raft_state_to(&self, raft_wb: &mut WriteBatch) -> Result<()> {
-        raft_wb.put_msg(&keys::raft_state_key(self.region_id), &self.raft_state)?;
+    pub fn save_raft_state_to(&self, raftdb: &DB, raft_wb: &mut WriteBatch) -> Result<()> {
+        let cf = rocksdb_util::get_cf_handle(raftdb, CF_RAFT).unwrap();
+        raft_wb.put_msg_cf(cf, &keys::raft_state_key(self.region_id), &self.raft_state)?;
         Ok(())
     }
 
@@ -388,10 +389,11 @@ pub fn recover_from_applying_state(
         };
 
     let raft_state_key = keys::raft_state_key(region_id);
-    let raft_state: RaftLocalState = match box_try!(engines.raft.get_msg(&raft_state_key)) {
-        Some(state) => state,
-        None => RaftLocalState::new(),
-    };
+    let raft_state: RaftLocalState =
+        match box_try!(engines.raft.get_msg_cf(CF_RAFT, &raft_state_key)) {
+            Some(state) => state,
+            None => RaftLocalState::new(),
+        };
 
     // if we recv append log when applying snapshot, last_index in raft_local_state will
     // larger than snapshot_index. since raft_local_state is written to raft engine, and
@@ -400,14 +402,15 @@ pub fn recover_from_applying_state(
     // (snapshot_raft_state), and set snapshot_raft_state.last_index = snapshot_index.
     // after restart, we need check last_index.
     if last_index(&snapshot_raft_state) > last_index(&raft_state) {
-        raft_wb.put_msg(&raft_state_key, &snapshot_raft_state)?;
+        let cf = rocksdb_util::get_cf_handle(&engines.raft, CF_RAFT).unwrap();
+        raft_wb.put_msg_cf(cf, &raft_state_key, &snapshot_raft_state)?;
     }
     Ok(())
 }
 
 pub fn init_raft_state(raft_engine: &DB, region: &Region) -> Result<RaftLocalState> {
     let state_key = keys::raft_state_key(region.get_id());
-    Ok(match raft_engine.get_msg(&state_key)? {
+    Ok(match raft_engine.get_msg_cf(CF_RAFT, &state_key)? {
         Some(s) => s,
         None => {
             let mut raft_state = RaftLocalState::new();
@@ -416,7 +419,8 @@ pub fn init_raft_state(raft_engine: &DB, region: &Region) -> Result<RaftLocalSta
                 raft_state.set_last_index(RAFT_INIT_LOG_INDEX);
                 raft_state.mut_hard_state().set_term(RAFT_INIT_LOG_TERM);
                 raft_state.mut_hard_state().set_commit(RAFT_INIT_LOG_INDEX);
-                raft_engine.put_msg(&state_key, &raft_state)?;
+                let cf_raft = rocksdb_util::get_cf_handle(raft_engine, CF_RAFT).unwrap();
+                raft_engine.put_msg_cf(cf_raft, &state_key, &raft_state)?;
             }
             raft_state
         }
@@ -1112,7 +1116,7 @@ impl PeerStorage {
         }
 
         if ctx.raft_state != self.raft_state {
-            ctx.save_raft_state_to(ready_ctx.raft_wb_mut())?;
+            ctx.save_raft_state_to(&self.engines.raft, ready_ctx.raft_wb_mut())?;
             if snapshot_index > 0 {
                 // in case of restart happen when we just write region state to Applying,
                 // but not write raft_local_state to raft rocksdb in time.
@@ -1282,7 +1286,8 @@ pub fn clear_meta(
     for id in first_index..=last_index {
         raft_wb.delete(&keys::raft_log_key(region_id, id))?;
     }
-    raft_wb.delete(&keys::raft_state_key(region_id))?;
+    let cf = rocksdb_util::get_cf_handle(&engines.raft, CF_RAFT).unwrap();
+    raft_wb.delete_cf(cf, &keys::raft_state_key(region_id))?;
 
     info!(
         "[region {}] clear peer 1 meta key, 1 apply key, 1 raft key and {} raft logs, takes {:?}",
@@ -1378,13 +1383,18 @@ pub fn do_snapshot(
 }
 
 // When we bootstrap the region we must call this to initialize region local state first.
-pub fn write_initial_raft_state<T: Mutable>(raft_wb: &T, region_id: u64) -> Result<()> {
+pub fn write_initial_raft_state<T: Mutable>(
+    raftdb: &DB,
+    raft_wb: &T,
+    region_id: u64,
+) -> Result<()> {
     let mut raft_state = RaftLocalState::new();
     raft_state.set_last_index(RAFT_INIT_LOG_INDEX);
     raft_state.mut_hard_state().set_term(RAFT_INIT_LOG_TERM);
     raft_state.mut_hard_state().set_commit(RAFT_INIT_LOG_INDEX);
 
-    raft_wb.put_msg(&keys::raft_state_key(region_id), &raft_state)?;
+    let cf = rocksdb_util::get_cf_handle(raftdb, CF_RAFT).unwrap();
+    raft_wb.put_msg_cf(cf, &keys::raft_state_key(region_id), &raft_state)?;
     Ok(())
 }
 

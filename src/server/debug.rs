@@ -648,7 +648,7 @@ impl Debugger {
         if box_try!(raft.get_msg::<RaftLocalState>(&key)).is_some() {
             return Err(Error::Other("Store already has the RaftLocalState".into()));
         }
-        box_try!(write_initial_raft_state(&raft_wb, region_id));
+        box_try!(write_initial_raft_state(raft, &raft_wb, region_id));
 
         let mut write_opts = WriteOptions::new();
         write_opts.set_sync(true);

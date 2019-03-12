@@ -852,7 +852,7 @@ impl<T, C> RaftPollerBuilder<T, C> {
     ) {
         let region = origin_state.get_region();
         let raft_key = keys::raft_state_key(region.get_id());
-        let raft_state = match self.engines.raft.get_msg(&raft_key).unwrap() {
+        let raft_state = match self.engines.raft.get_msg_cf(CF_RAFT, &raft_key).unwrap() {
             // it has been cleaned up.
             None => return,
             Some(value) => value,
