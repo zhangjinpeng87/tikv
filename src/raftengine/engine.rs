@@ -144,7 +144,7 @@ impl RaftEngine {
                                     offset
                                 );
                                     let mut pipe_log = self.pipe_log.write().unwrap();
-                                    pipe_log.truncate_active_log(offset).unwrap();
+                                    pipe_log.truncate_active_log(offset as usize).unwrap();
                                     break;
                                 }
                                 RecoveryMode::AbsoluteConsistency => {
@@ -425,9 +425,10 @@ impl RaftEngine {
         }
     }
 
-    pub fn sync_data(&self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         let mut pipe_log = self.pipe_log.write().unwrap();
-        pipe_log.sync_data()
+        pipe_log.sync();
+        Ok(())
     }
 
     pub fn kv_count(&self, region_id: u64) -> usize {

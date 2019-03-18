@@ -121,7 +121,7 @@ impl Runner {
         // Rewrite inactive regions' entries to new file, so the old
         // files can be dropped ASAP.
         if raft_engine.rewrite_inactive() {
-            raft_engine.sync_data()?;
+            raft_engine.sync()?;
         }
 
         // Collect regions that need force compact.
