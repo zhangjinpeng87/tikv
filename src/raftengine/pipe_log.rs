@@ -202,6 +202,7 @@ impl PipeLog {
                 libc::fallocate(
                     self.active_log_fd,
                     0,
+                    0,
                     self.active_log_capacity + FILE_ALLOCATE_SIZE,
                 )
             };
