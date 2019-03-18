@@ -189,7 +189,7 @@ impl PipeLog {
         let all_files = self.all_files.write().unwrap();
         unsafe {
             for fd in all_files.iter() {
-                libc::close(fd);
+                libc::close(*fd);
             }
         }
         Ok(())
@@ -282,7 +282,7 @@ impl PipeLog {
 
     fn rotate_log(&mut self) {
         {
-            self.truncate_active_log(self.active_log_size);
+            self.truncate_active_log(self.active_log_size).unwrap();
         }
 
         // New log file.

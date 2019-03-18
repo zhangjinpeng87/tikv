@@ -426,7 +426,7 @@ impl RaftEngine {
     }
 
     pub fn sync(&self) -> Result<()> {
-        let mut pipe_log = self.pipe_log.write().unwrap();
+        let pipe_log = self.pipe_log.write().unwrap();
         pipe_log.sync();
         Ok(())
     }
