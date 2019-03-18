@@ -407,7 +407,7 @@ impl LogBatch {
         }
 
         let batch_len = number::decode_u64(buf)? as usize;
-        if buf.len() < batch_len {
+        if batch_len < BATCH_MIN_SIZE || buf.len() < batch_len {
             return Err(Error::TooShort);
         }
 
