@@ -199,14 +199,14 @@ impl PipeLog {
         let file_num = self.active_file_num;
         let offset = self.active_log_size as u64;
 
-        // Use fallocate to allocate disk space for active file. fallocate is faster than File::set_len,
+        // Use fallocate to pre-allocate disk space for active file. fallocate is faster than File::set_len,
         // because it will not fill the space with 0s, but File::set_len does.
         let after_size = self.active_log_size + content.len();
         while self.active_log_capacity < after_size {
             let allocate_ret = unsafe {
                 libc::fallocate(
                     self.active_log_fd,
-                    0,
+                    libc::FALLOC_FL_KEEP_SIZE,
                     self.active_log_capacity as libc::off_t,
                     FILE_ALLOCATE_SIZE as libc::off_t,
                 )
@@ -252,9 +252,9 @@ impl PipeLog {
             || self.bytes_per_sync > 0
                 && self.active_log_size - self.last_sync_size >= self.bytes_per_sync
         {
-            let sync_ret = unsafe { libc::fdatasync(self.active_log_fd) };
+            let sync_ret = unsafe { libc::fsync(self.active_log_fd) };
             if sync_ret != 0 {
-                panic!("fdatasync failed");
+                panic!("fsync failed");
             }
             self.last_sync_size = self.active_log_size;
         }
