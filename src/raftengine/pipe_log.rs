@@ -206,7 +206,7 @@ impl PipeLog {
             let allocate_ret = unsafe {
                 libc::fallocate(
                     self.active_log_fd,
-                    0,
+                    libc::FALLOC_FL_KEEP_SIZE,
                     0,
                     (self.active_log_capacity + FILE_ALLOCATE_SIZE) as libc::off_t,
                 )
@@ -216,11 +216,6 @@ impl PipeLog {
                     "Allocate disk space for active log failed, ret {}",
                     allocate_ret
                 );
-            }
-            // Fallocate will change the size of file, use fsync to flush the file's metadata.
-            let sync_ret = unsafe { libc::fsync(self.active_log_fd) };
-            if sync_ret != 0 {
-                panic!("Fsync failed");
             }
             self.active_log_capacity += FILE_ALLOCATE_SIZE;
         }
