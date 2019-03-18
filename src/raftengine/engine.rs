@@ -131,7 +131,8 @@ impl RaftEngine {
                         info!("Recovered raft log file {}.", current_read_file);
                         break;
                     }
-                    e @ Err(Error::TooShort) => {
+                    Err(e) => {
+                        // There may be a pre-allocated space at the tail of the active log.
                         if current_read_file == active_file_num {
                             match recovery_mode {
                                 RecoveryMode::TolerateCorruptedTailRecords => {
@@ -160,12 +161,6 @@ impl RaftEngine {
                         } else {
                             panic!("Corruption occur in middle log file {}", current_read_file);
                         }
-                    }
-                    Err(e) => {
-                        panic!(
-                            "Failed when recover log file {}, error {:?}",
-                            current_read_file, e
-                        );
                     }
                 }
             }

@@ -403,7 +403,7 @@ impl PipeLog {
         path.push(generate_file_name(file_num));
 
         let path_cstr = CString::new(path.as_path().to_str().unwrap().as_bytes()).unwrap();
-        let fd = unsafe { libc::open(path_cstr.as_ptr(), libc::O_RDWR | libc::O_CREAT) };
+        let fd = unsafe { libc::open(path_cstr.as_ptr(), libc::O_RDWR | libc::O_CREAT, libc::S_IRUSR|libc::S_IWUSR) };
         if fd < 0 {
             panic!("Open file failed");
         }
