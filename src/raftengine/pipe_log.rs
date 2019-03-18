@@ -140,9 +140,12 @@ impl PipeLog {
             let path_cstr = CString::new(path.as_path().to_str().unwrap().as_bytes()).unwrap();
             let fd = unsafe { libc::open(path_cstr.as_ptr(), mode) };
             if fd < 0 {
-                panic!("open file failed, errno {}", errno::errno().0);
+                panic!("open file failed, err {}", errno::errno().to_string());
             }
             all_files.push_back(fd);
+            if current_file == self.active_file_num {
+                self.active_log_fd = fd;
+            }
             current_file += 1;
         }
         Ok(())
@@ -213,8 +216,8 @@ impl PipeLog {
             };
             if allocate_ret != 0 {
                 panic!(
-                    "Allocate disk space for active log failed, ret {}, errno {}",
-                    allocate_ret, errno::errno().0
+                    "Allocate disk space for active log failed, ret {}, err {}",
+                    allocate_ret, errno::errno().to_string()
                 );
             }
             self.active_log_capacity += FILE_ALLOCATE_SIZE;
@@ -254,7 +257,7 @@ impl PipeLog {
         {
             let sync_ret = unsafe { libc::fsync(self.active_log_fd) };
             if sync_ret != 0 {
-                panic!("fsync failed, errno {}", errno::errno().0);
+                panic!("fsync failed, err {}", errno::errno().to_string());
             }
             self.last_sync_size = self.active_log_size;
         }
@@ -341,7 +344,7 @@ impl PipeLog {
             };
             let close_res = unsafe { libc::close(old_fd) };
             if close_res != 0 {
-                panic!("close file failed, errno {}", errno::errno().0);
+                panic!("close file failed, err {}", errno::errno().to_string());
             }
 
             // Remove the file
@@ -372,11 +375,11 @@ impl PipeLog {
 
         let truncate_res = unsafe { libc::ftruncate(self.active_log_fd, offset as libc::off_t) };
         if truncate_res != 0 {
-            panic!("Ftruncate file failed, errno {}", errno::errno().0);
+            panic!("Ftruncate file failed, err {}", errno::errno().to_string());
         }
         let sync_res = unsafe { libc::fsync(self.active_log_fd) };
         if sync_res != 0 {
-            panic!("Fsync file failed, errno {}", errno::errno().0);
+            panic!("Fsync file failed, err {}", errno::errno().to_string());
         }
 
         self.active_log_size = offset;
@@ -389,7 +392,7 @@ impl PipeLog {
     pub fn sync(&self) {
         let sync_res = unsafe { libc::fsync(self.active_log_fd) };
         if sync_res != 0 {
-            panic!("Fsync failed, errno {}", errno::errno().0);
+            panic!("Fsync failed, err {}", errno::errno().to_string());
         }
     }
 
@@ -400,7 +403,7 @@ impl PipeLog {
         let path_cstr = CString::new(path.as_path().to_str().unwrap().as_bytes()).unwrap();
         let fd = unsafe { libc::open(path_cstr.as_ptr(), libc::O_RDWR | libc::O_CREAT, libc::S_IRUSR|libc::S_IWUSR) };
         if fd < 0 {
-            panic!("Open file failed, errno {}", errno::errno().0);
+            panic!("Open file failed, err {}", errno::errno().to_string());
         }
         fd
     }
