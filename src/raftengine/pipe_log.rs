@@ -21,7 +21,7 @@ pub const FILE_MAGIC_HEADER: &[u8] = b"RAFT-LOG-FILE-HEADER-9986AB3E47F320B394C8
 pub const VERSION: &[u8] = b"v1.0.0";
 const INIT_FILE_NUM: u64 = 1;
 const DEFAULT_FILES_COUNT: usize = 32;
-const FILE_ALLOCATE_SIZE: usize = 16 * 1024 * 1024;
+const FILE_ALLOCATE_SIZE: usize = 2 * 1024 * 1024;
 
 pub struct PipeLog {
     first_file_num: u64,
@@ -206,9 +206,9 @@ impl PipeLog {
             let allocate_ret = unsafe {
                 libc::fallocate(
                     self.active_log_fd,
-                    libc::FALLOC_FL_KEEP_SIZE,
                     0,
-                    (self.active_log_capacity + FILE_ALLOCATE_SIZE) as libc::off_t,
+                    self.active_log_capacity as libc::off_t,
+                    FILE_ALLOCATE_SIZE as libc::off_t,
                 )
             };
             if allocate_ret != 0 {
