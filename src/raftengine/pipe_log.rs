@@ -102,8 +102,10 @@ impl PipeLog {
         let mut pipe_log = PipeLog::new(dir, bytes_per_sync, rotate_size);
         if log_files.is_empty() {
             pipe_log.active_log_fd = pipe_log.new_log_file(pipe_log.active_file_num);
-            let all_files = pipe_log.all_files.write().unwrap();
-            all_files.push_back(pipe_log.active_log_fd);
+            {
+                let mut all_files = pipe_log.all_files.write().unwrap();
+                all_files.push_back(pipe_log.active_log_fd);
+            }
             pipe_log.write_header()?;
             return Ok(pipe_log);
         }
@@ -121,7 +123,7 @@ impl PipeLog {
     }
 
     fn open_all_files(&mut self) -> Result<()> {
-        let all_files = self.all_files.write().unwrap();
+        let mut all_files = self.all_files.write().unwrap();
         let mut current_file = self.first_file_num;
         while current_file <= self.active_file_num {
             let mut path = PathBuf::from(&self.dir);
@@ -141,6 +143,7 @@ impl PipeLog {
                 panic!("open file failed");
             }
             all_files.push_back(fd);
+            current_file += 1;
         }
         Ok(())
     }
@@ -173,17 +176,19 @@ impl PipeLog {
                     ret_size
                 ));
             }
+            result.set_len(len as usize);
         }
-        result.set_len(len as usize);
 
         Ok(result)
     }
 
     pub fn close(&mut self) -> Result<()> {
+        {
+            self.truncate_active_log(self.active_log_size)?;
+        }
         let all_files = self.all_files.write().unwrap();
-        self.truncate_active_log(self.active_log_size)?;
         unsafe {
-            for fd in all_files.into_iter() {
+            for fd in all_files.iter() {
                 libc::close(fd);
             }
         }
@@ -203,7 +208,7 @@ impl PipeLog {
                     self.active_log_fd,
                     0,
                     0,
-                    self.active_log_capacity + FILE_ALLOCATE_SIZE,
+                    (self.active_log_capacity + FILE_ALLOCATE_SIZE) as libc::off_t,
                 )
             };
             if allocate_ret != 0 {
@@ -238,10 +243,10 @@ impl PipeLog {
                 continue;
             }
             let err = errno::errno();
-            if err.into() != libc::EAGAIN {
+            if err.0 != libc::EAGAIN {
                 panic!(
                     "Write to active log failed, errno: {}, err description: {}",
-                    err.into(),
+                    err.0,
                     err.to_string()
                 );
             }
@@ -276,13 +281,17 @@ impl PipeLog {
     }
 
     fn rotate_log(&mut self) {
-        self.truncate_active_log(self.active_log_size);
+        {
+            self.truncate_active_log(self.active_log_size);
+        }
 
         // New log file.
         let next_file_num = self.active_file_num + 1;
         self.active_log_fd = self.new_log_file(next_file_num);
-        let all_files = self.all_files.write().unwrap();
-        all_files.push_back(self.active_log_fd);
+        {
+            let mut all_files = self.all_files.write().unwrap();
+            all_files.push_back(self.active_log_fd);
+        }
         self.active_log_size = 0;
         self.active_log_capacity = 0;
         self.last_sync_size = 0;
@@ -332,7 +341,7 @@ impl PipeLog {
 
             // Close the file.
             let old_fd = {
-                let all_files = self.all_files.write().unwrap();
+                let mut all_files = self.all_files.write().unwrap();
                 all_files.pop_front().unwrap()
             };
             let close_res = unsafe { libc::close(old_fd) };
