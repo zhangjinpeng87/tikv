@@ -1,6 +1,8 @@
+use compress::lz4;
 use std::cell::RefCell;
 use std::io::BufRead;
 use std::mem;
+use std::u64;
 
 // crc32c implement Castagnoli Polynomial algorithm
 // which also is used in iSCSI and SCTP. It is 50x
@@ -25,6 +27,32 @@ const TYPE_COMMAND: u8 = 0x02;
 const TYPE_KV: u8 = 0x3;
 
 const CMD_CLEAN: u8 = 0x01;
+
+const COMPRESSION_SIZE: usize = 4096;
+
+enum BatchCompressionType {
+    None,
+    Lz4,
+}
+
+impl BatchCompressionType {
+    pub fn from_byte(t: u8) -> BatchCompressionType {
+        if t == 0x0 {
+            BatchCompressionType::None
+        } else if t == 0x1 {
+            BatchCompressionType::Lz4
+        } else {
+            panic!("unknown batch compression type {}", t)
+        }
+    }
+
+    pub fn to_byte(&self) -> u8 {
+        match *self {
+            BatchCompressionType::None => 0x0,
+            BatchCompressionType::Lz4 => 0x1,
+        }
+    }
+}
 
 type SliceReader<'a> = &'a [u8];
 
@@ -406,7 +434,10 @@ impl LogBatch {
             return Err(Error::TooShort);
         }
 
-        let batch_len = number::decode_u64(buf)? as usize;
+        // Header 8 bytes = 7 bytes len + 1 byte type
+        let header = number::decode_u64(buf)? as usize;
+        let batch_len = header >> 8;
+        let batch_type = BatchCompressionType::from_byte(header as u8);
         if batch_len < BATCH_MIN_SIZE || buf.len() < batch_len {
             return Err(Error::TooShort);
         }
@@ -420,25 +451,58 @@ impl LogBatch {
             return Err(Error::CheckSumError);
         }
 
-        let mut items_count = number::decode_var_u64(buf)? as usize;
-        if items_count == 0 || buf.is_empty() {
-            panic!("Empty log event is not supported");
-        }
+        match batch_type {
+            BatchCompressionType::None => {
+                let mut items_count = number::decode_var_u64(buf)? as usize;
+                if items_count == 0 || buf.is_empty() {
+                    panic!("Empty log event is not supported");
+                }
 
-        let log_batch = LogBatch::new();
-        loop {
-            if items_count == 0 {
-                // 4 bytes checksum
-                buf.consume(4);
-                break;
+                let log_batch = LogBatch::new();
+                loop {
+                    if items_count == 0 {
+                        // 4 bytes checksum
+                        buf.consume(4);
+                        break;
+                    }
+
+                    let item = LogItem::from_bytes(buf, file_num, fstart)?;
+                    log_batch.items.borrow_mut().push(item);
+
+                    items_count -= 1;
+                }
+                Ok(Some(log_batch))
             }
+            BatchCompressionType::Lz4 => {
+                let mut decompressed = Vec::with_capacity(4 * batch_len);
+                let decompressed_len = lz4::decode_block(&buf[..batch_len], &mut decompressed);
+                assert_eq!(decompressed_len, decompressed.len());
+                buf.consume(batch_len);
 
-            let item = LogItem::from_bytes(buf, file_num, fstart)?;
-            log_batch.items.borrow_mut().push(item);
+                let reader = &mut decompressed.as_slice();
 
-            items_count -= 1;
+                let mut items_count = number::decode_var_u64(reader)? as usize;
+                if items_count == 0 || reader.is_empty() {
+                    panic!("Empty log event is not supported");
+                }
+
+                let log_batch = LogBatch::new();
+                loop {
+                    if items_count == 0 {
+                        // 4 bytes checksum
+                        reader.consume(4);
+                        break;
+                    }
+
+                    let item = LogItem::from_bytes(reader, file_num, fstart)?;
+                    log_batch.items.borrow_mut().push(item);
+
+                    items_count -= 1;
+                }
+
+                Ok(Some(log_batch))
+            }
         }
-        Ok(Some(log_batch))
     }
 
     pub fn encode_to_bytes(&self) -> Option<Vec<u8>> {
@@ -454,10 +518,26 @@ impl LogBatch {
         for item in self.items.borrow_mut().iter_mut() {
             item.encode_to(&mut vec).unwrap();
         }
+
+        let compression_type = if vec.len() > COMPRESSION_SIZE {
+            let mut dst = Vec::with_capacity(vec.len());
+            let compressed_size = lz4::encode_block(&vec.as_slice()[8..], &mut dst);
+            assert_eq!(compressed_size, dst.len());
+            unsafe {
+                vec.set_len(8);
+            }
+            vec.extend_from_slice(dst.as_slice());
+            BatchCompressionType::Lz4
+        } else {
+            BatchCompressionType::None
+        };
+
         let checksum = crc32c(&vec.as_slice()[8..]);
         vec.encode_u32_le(checksum).unwrap();
         let len = vec.len() as u64 - 8;
-        vec.as_mut_slice().write_u64::<BigEndian>(len).unwrap();
+        let mut header = len << 8;
+        header |= u64::from(compression_type.to_byte());
+        vec.as_mut_slice().write_u64::<BigEndian>(header).unwrap();
 
         Some(vec)
     }
