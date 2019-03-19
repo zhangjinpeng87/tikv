@@ -47,7 +47,7 @@ pub struct RaftEngine {
     memtables: Vec<RwLock<HashMap<u64, MemTable>>>,
 
     // Persistent entries.
-    pipe_log: RwLock<PipeLog>,
+    pipe_log: PipeLog,
 }
 
 impl fmt::Debug for RaftEngine {
@@ -58,7 +58,7 @@ impl fmt::Debug for RaftEngine {
 
 impl RaftEngine {
     pub fn new(cfg: Config) -> RaftEngine {
-        let pip_log = PipeLog::open(
+        let pipe_log = PipeLog::open(
             &cfg.dir,
             cfg.bytes_per_sync.0 as usize,
             cfg.target_file_size.0 as usize,
@@ -71,7 +71,7 @@ impl RaftEngine {
         let mut engine = RaftEngine {
             cfg,
             memtables,
-            pipe_log: RwLock::new(pip_log),
+            pipe_log,
         };
         let recovery_mode = RecoveryMode::from(engine.cfg.recovery_mode);
         engine
@@ -84,8 +84,10 @@ impl RaftEngine {
     fn recover(&mut self, recovery_mode: RecoveryMode) -> Result<()> {
         // Get first file number and last file number.
         let (first_file_num, active_file_num) = {
-            let pipe_log = self.pipe_log.read().unwrap();
-            (pipe_log.first_file_num(), pipe_log.active_file_num())
+            (
+                self.pipe_log.first_file_num(),
+                self.pipe_log.active_file_num(),
+            )
         };
 
         let start = Instant::now();
@@ -99,8 +101,7 @@ impl RaftEngine {
 
             // Read a file
             let content = {
-                let mut pipe_log = self.pipe_log.write().unwrap();
-                pipe_log
+                self.pipe_log
                     .read_next_file()
                     .unwrap_or_else(|e| {
                         panic!(
@@ -143,9 +144,8 @@ impl RaftEngine {
                                     e,
                                     current_read_file,
                                     offset
-                                );
-                                    let mut pipe_log = self.pipe_log.write().unwrap();
-                                    pipe_log.truncate_active_log(offset as usize).unwrap();
+                                    );
+                                    self.pipe_log.truncate_active_log(offset as usize).unwrap();
                                     break;
                                 }
                                 RecoveryMode::AbsoluteConsistency => {
@@ -194,8 +194,8 @@ impl RaftEngine {
     // so the old files can be dropped ASAP.
     pub fn rewrite_inactive(&self) -> bool {
         let inactive_file_num = {
-            let pipe_log = self.pipe_log.read().unwrap();
-            pipe_log.files_before(self.cfg.cache_size_limit.0 as usize)
+            self.pipe_log
+                .files_before(self.cfg.cache_size_limit.0 as usize)
         };
 
         if inactive_file_num == 0 {
@@ -258,10 +258,7 @@ impl RaftEngine {
                     }
 
                     // Rewrite to new log file
-                    let write_res = {
-                        let mut pipe_log = self.pipe_log.write().unwrap();
-                        pipe_log.append_log_batch(&log_batch, false)
-                    };
+                    let write_res = { self.pipe_log.append_log_batch(&log_batch, false) };
 
                     // Apply to memtable
                     match write_res {
@@ -311,10 +308,11 @@ impl RaftEngine {
         // inactive_file_num: files before this one should not in cache.
         // gc_file_num: entries in these files should compact by force.
         let (inactive_file_num, gc_file_num) = {
-            let pipe_log = self.pipe_log.read().unwrap();
             (
-                pipe_log.files_before(self.cfg.cache_size_limit.0 as usize),
-                pipe_log.files_before(self.cfg.total_size_limit.0 as usize),
+                self.pipe_log
+                    .files_before(self.cfg.cache_size_limit.0 as usize),
+                self.pipe_log
+                    .files_before(self.cfg.total_size_limit.0 as usize),
             )
         };
 
@@ -362,10 +360,9 @@ impl RaftEngine {
     }
 
     pub fn evict_old_from_cache(&self) {
-        let inactive_file_num = {
-            let pipe_log = self.pipe_log.read().unwrap();
-            pipe_log.files_before(self.cfg.cache_size_limit.0 as usize)
-        };
+        let inactive_file_num = self
+            .pipe_log
+            .files_before(self.cfg.cache_size_limit.0 as usize);
 
         if inactive_file_num == 0 {
             return;
@@ -391,8 +388,7 @@ impl RaftEngine {
             }
         }
 
-        let mut pipe_log = self.pipe_log.write().unwrap();
-        pipe_log.purge_to(min_file_num)
+        self.pipe_log.purge_to(min_file_num)
     }
 
     pub fn compact_to(&self, region_id: u64, index: u64) -> u64 {
@@ -407,10 +403,7 @@ impl RaftEngine {
     }
 
     pub fn write(&self, log_batch: LogBatch, sync: bool) -> Result<()> {
-        let write_res = {
-            let mut pipe_log = self.pipe_log.write().unwrap();
-            pipe_log.append_log_batch(&log_batch, sync)
-        };
+        let write_res = self.pipe_log.append_log_batch(&log_batch, sync);
         match write_res {
             Ok(file_num) => {
                 self.post_append_to_file(log_batch, file_num);
@@ -421,8 +414,7 @@ impl RaftEngine {
     }
 
     pub fn sync(&self) -> Result<()> {
-        let pipe_log = self.pipe_log.write().unwrap();
-        pipe_log.sync();
+        self.pipe_log.sync();
         Ok(())
     }
 
@@ -513,13 +505,14 @@ impl RaftEngine {
         expect_idx: u64,
     ) -> Result<Entry> {
         let content = {
-            let pipe_log = self.pipe_log.read().unwrap();
-            pipe_log.fread(file_num, offset, len).unwrap_or_else(|e| {
-                panic!(
-                    "Read from file {} in offset {} failed, err {:?}",
-                    file_num, offset, e
-                )
-            })
+            self.pipe_log
+                .fread(file_num, offset, len)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Read from file {} in offset {} failed, err {:?}",
+                        file_num, offset, e
+                    )
+                })
         };
         let mut e = Entry::new();
         e.merge_from_bytes(content.as_slice())?;
@@ -576,6 +569,9 @@ impl RaftEngine {
                 Ok(num) => {
                     let count = num + entries_idx.len() as u64;
                     // Read remain entries from file if there are.
+                    if !entries_idx.is_empty() {
+                        READ_ENTRY_FROM_PIPE_FILE.inc_by(entries_idx.len() as f64);
+                    }
                     for idx in &entries_idx {
                         let e = self.read_entry_from_file(
                             idx.file_num,

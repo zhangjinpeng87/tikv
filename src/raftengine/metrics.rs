@@ -47,4 +47,9 @@ lazy_static! {
         "Total number of current pipe log files."
     )
     .unwrap();
+    pub static ref READ_ENTRY_FROM_PIPE_FILE: Counter = register_counter!(
+        "tikv_raftengine_fread_counter",
+        "Total number of read from file happens"
+    )
+    .unwrap();
 }
