@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::u64;
 
+#[cfg(target_os = "linux")]
 use crate::util::time::{duration_to_sec, SlowTimer};
 
 use super::log_batch::{LogBatch, LogItemType};
@@ -23,7 +24,13 @@ pub const FILE_MAGIC_HEADER: &[u8] = b"RAFT-LOG-FILE-HEADER-9986AB3E47F320B394C8
 pub const VERSION: &[u8] = b"v1.0.0";
 const INIT_FILE_NUM: u64 = 1;
 const DEFAULT_FILES_COUNT: usize = 32;
+
+#[cfg(target_os = "linux")]
 const FILE_ALLOCATE_SIZE: usize = 2 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const NEW_FILE_MODE: libc::c_int = libc::S_IRUSR | libc::S_IWUSR;
+#[cfg(not(target_os = "linux"))]
+const NEW_FILE_MODE: libc::c_uint = (libc::S_IRUSR | libc::S_IWUSR) as libc::c_uint;
 
 struct LogManager {
     pub first_file_num: u64,
@@ -234,6 +241,8 @@ impl PipeLog {
     }
 
     fn append(&self, content: &[u8], sync: bool) -> Result<(u64, u64)> {
+        APPEND_LOG_SIZE_HISTOGRAM.observe(content.len() as f64);
+
         let (active_log_fd, mut active_log_size, last_sync_size, file_num, offset) = {
             let manager = self.log_manager.read().unwrap();
             (
@@ -244,40 +253,42 @@ impl PipeLog {
                 manager.active_log_size as u64,
             )
         };
-
-        // Use fallocate to pre-allocate disk space for active file. fallocate is faster than File::set_len,
-        // because it will not fill the space with 0s, but File::set_len does.
-        let (new_size, mut active_log_capacity) = {
-            let manager = self.log_manager.read().unwrap();
-            (
-                manager.active_log_size + content.len(),
-                manager.active_log_capacity,
-            )
-        };
-        while active_log_capacity < new_size {
-            let t = SlowTimer::new();
-            let allocate_ret = unsafe {
-                libc::fallocate(
-                    active_log_fd,
-                    libc::FALLOC_FL_KEEP_SIZE,
-                    active_log_capacity as libc::off_t,
-                    FILE_ALLOCATE_SIZE as libc::off_t,
+        #[cfg(target_os = "linux")]
+        {
+            // Use fallocate to pre-allocate disk space for active file. fallocate is faster than File::set_len,
+            // because it will not fill the space with 0s, but File::set_len does.
+            let (new_size, mut active_log_capacity) = {
+                let manager = self.log_manager.read().unwrap();
+                (
+                    manager.active_log_size + content.len(),
+                    manager.active_log_capacity,
                 )
             };
-            let dur = t.elapsed();
-            PRE_ALLOCATE_DISK_SPACE_HISTOGRAM.observe(duration_to_sec(dur) as f64);
+            while active_log_capacity < new_size {
+                let t = SlowTimer::new();
+                let allocate_ret = unsafe {
+                    libc::fallocate(
+                        active_log_fd,
+                        libc::FALLOC_FL_KEEP_SIZE,
+                        active_log_capacity as libc::off_t,
+                        FILE_ALLOCATE_SIZE as libc::off_t,
+                    )
+                };
+                let dur = t.elapsed();
+                PRE_ALLOCATE_DISK_SPACE_HISTOGRAM.observe(duration_to_sec(dur) as f64);
 
-            if allocate_ret != 0 {
-                panic!(
-                    "Allocate disk space for active log failed, ret {}, err {}",
-                    allocate_ret,
-                    errno::errno().to_string()
-                );
-            }
-            {
-                let mut manager = self.log_manager.write().unwrap();
-                manager.active_log_capacity += FILE_ALLOCATE_SIZE;
-                active_log_capacity = manager.active_log_capacity;
+                if allocate_ret != 0 {
+                    panic!(
+                        "Allocate disk space for active log failed, ret {}, err {}",
+                        allocate_ret,
+                        errno::errno().to_string()
+                    );
+                }
+                {
+                    let mut manager = self.log_manager.write().unwrap();
+                    manager.active_log_capacity += FILE_ALLOCATE_SIZE;
+                    active_log_capacity = manager.active_log_capacity;
+                }
             }
         }
 
@@ -448,14 +459,6 @@ impl PipeLog {
     pub fn truncate_active_log(&self, offset: usize) -> Result<()> {
         {
             let manager = self.log_manager.read().unwrap();
-            if offset > manager.active_log_capacity {
-                return Err(box_err!(
-                    "Offset {} is larger than file size {} when call truncate",
-                    offset,
-                    manager.active_log_capacity
-                ));
-            }
-
             let truncate_res =
                 unsafe { libc::ftruncate(manager.active_log_fd, offset as libc::off_t) };
             if truncate_res != 0 {
@@ -477,11 +480,8 @@ impl PipeLog {
     }
 
     pub fn sync(&self) {
-        let fd = {
-            let manager = self.log_manager.read().unwrap();
-            manager.active_log_fd
-        };
-        let sync_res = unsafe { libc::fsync(fd) };
+        let manager = self.log_manager.read().unwrap();
+        let sync_res = unsafe { libc::fsync(manager.active_log_fd) };
         if sync_res != 0 {
             panic!("Fsync failed, err {}", errno::errno().to_string());
         }
@@ -551,7 +551,7 @@ fn new_log_file(dir: &str, file_num: u64) -> libc::c_int {
         libc::open(
             path_cstr.as_ptr(),
             libc::O_RDWR | libc::O_CREAT,
-            libc::S_IRUSR | libc::S_IWUSR,
+            NEW_FILE_MODE,
         )
     };
     if fd < 0 {
