@@ -52,4 +52,10 @@ lazy_static! {
         "Total number of read from file happens"
     )
     .unwrap();
+    pub static ref PRE_ALLOCATE_DISK_SPACE_HISTOGRAM: Histogram = register_histogram!(
+        "tikv_raftengine_pre_allocate_disk_duration_seconds",
+        "Bucketed histogram of pre allocate disk space duration",
+        exponential_buckets(0.0005, 2.0, 20).unwrap()
+    )
+    .unwrap();
 }

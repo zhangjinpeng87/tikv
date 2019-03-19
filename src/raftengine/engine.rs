@@ -17,7 +17,6 @@ use super::log_batch::{Command, LogBatch, LogItemType, OpType};
 use super::memtable::MemTable;
 use super::metrics::*;
 use super::pipe_log::{PipeLog, FILE_MAGIC_HEADER, VERSION};
-use super::Error;
 use super::Result;
 
 const SLOTS_COUNT: usize = 128;
@@ -116,7 +115,12 @@ impl RaftEngine {
             let mut buf = content.as_slice();
             let start_ptr: *const u8 = buf.as_ptr();
             if buf.len() < FILE_MAGIC_HEADER.len() || !buf.starts_with(FILE_MAGIC_HEADER) {
-                panic!("Raft log file {} is corrupted.", current_read_file);
+                if current_read_file != active_file_num {
+                    panic!("Raft log file {} is corrupted.", current_read_file);
+                } else {
+                    self.pipe_log.truncate_active_log(0).unwrap();
+                    break;
+                }
             }
             buf.consume(FILE_MAGIC_HEADER.len() + VERSION.len());
 
