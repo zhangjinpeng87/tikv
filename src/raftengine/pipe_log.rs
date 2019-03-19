@@ -232,8 +232,6 @@ impl PipeLog {
     }
 
     fn append(&self, content: &[u8], sync: bool) -> Result<(u64, u64)> {
-        let _write_lock = self.write_lock.lock().unwrap();
-
         let (active_log_fd, mut active_log_size, last_sync_size, file_num, offset) = {
             let manager = self.log_manager.read().unwrap();
             (
@@ -365,7 +363,10 @@ impl PipeLog {
 
     pub fn append_log_batch(&self, batch: &LogBatch, sync: bool) -> Result<u64> {
         if let Some(content) = batch.encode_to_bytes() {
-            let (file_num, offset) = self.append(&content, sync)?;
+            let (file_num, offset) = {
+                let _write_lock = self.write_lock.lock().unwrap();
+                self.append(&content, sync)?
+            };
             for item in batch.items.borrow_mut().iter_mut() {
                 match item.item_type {
                     LogItemType::Entries => item
