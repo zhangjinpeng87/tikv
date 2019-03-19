@@ -247,16 +247,16 @@ impl PipeLog {
 
         // Use fallocate to pre-allocate disk space for active file. fallocate is faster than File::set_len,
         // because it will not fill the space with 0s, but File::set_len does.
-        let (new_size, mut ctive_log_capacity) = {
+        let (new_size, mut active_log_capacity) = {
             let manager = self.log_manager.read().unwrap();
             (manager.active_log_size + content.len(), manager.active_log_capacity)
         };
         while active_log_capacity < new_size {
             let allocate_ret = unsafe {
                 libc::fallocate(
-                    self.active_log_fd,
+                    active_log_fd,
                     libc::FALLOC_FL_KEEP_SIZE,
-                    self.active_log_capacity as libc::off_t,
+                    active_log_capacity as libc::off_t,
                     FILE_ALLOCATE_SIZE as libc::off_t,
                 )
             };
