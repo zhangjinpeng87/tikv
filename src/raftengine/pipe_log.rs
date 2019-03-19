@@ -28,7 +28,7 @@ const DEFAULT_FILES_COUNT: usize = 32;
 #[cfg(target_os = "linux")]
 const FILE_ALLOCATE_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(target_os = "linux")]
-const NEW_FILE_MODE: libc::c_int = libc::S_IRUSR | libc::S_IWUSR;
+const NEW_FILE_MODE: libc::mode_t = libc::S_IRUSR | libc::S_IWUSR;
 #[cfg(not(target_os = "linux"))]
 const NEW_FILE_MODE: libc::c_uint = (libc::S_IRUSR | libc::S_IWUSR) as libc::c_uint;
 
