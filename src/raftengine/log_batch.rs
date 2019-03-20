@@ -15,8 +15,10 @@ use protobuf::Message as PbMsg;
 use raft::eraftpb::Entry;
 
 use crate::util::codec::number::{self, NumberEncoder};
+use crate::util::time::{duration_to_sec, SlowTimer};
 
 use super::memtable::EntryIndex;
+use super::metrics::*;
 use super::Error;
 use super::Result;
 
@@ -509,6 +511,8 @@ impl LogBatch {
             return None;
         }
 
+        let t = SlowTimer::new();
+
         // layout = { 8 bytes len | item count | multiple items | 4 bytes checksum }
         let mut vec = Vec::with_capacity(4096);
         vec.encode_u64(0).unwrap();
@@ -518,6 +522,9 @@ impl LogBatch {
             item.encode_to(&mut vec).unwrap();
         }
 
+        let dur = t.elapsed();
+        RAFT_ENGINE_ENCODE_TO_BYTES_HISTOGRAM.observe(duration_to_sec(dur) as f64);
+
         let compression_type = if vec.len() > COMPRESSION_SIZE {
             let mut dst = Vec::with_capacity(vec.len());
             let compressed_size = lz4::encode_block(&vec.as_slice()[8..], &mut dst);
@@ -526,6 +533,10 @@ impl LogBatch {
                 vec.set_len(8);
             }
             vec.extend_from_slice(dst.as_slice());
+
+            let dur = t.elapsed();
+            RAFT_ENGINE_COMPRESSION_HISTOGRAM.observe(duration_to_sec(dur) as f64);
+
             BatchCompressionType::Lz4
         } else {
             BatchCompressionType::None
