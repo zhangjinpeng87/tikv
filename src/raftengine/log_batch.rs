@@ -475,7 +475,7 @@ impl LogBatch {
             }
             BatchCompressionType::Lz4 => {
                 let mut decompressed = Vec::with_capacity(4 * batch_len);
-                let decompressed_len = lz4::decode_block(&buf[..batch_len], &mut decompressed);
+                let decompressed_len = lz4::decode_block(&buf[..batch_len - 4], &mut decompressed);
                 assert_eq!(decompressed_len, decompressed.len());
                 buf.consume(batch_len);
 
