@@ -11,6 +11,7 @@ use protobuf::Message as PbMsg;
 use raft::eraftpb::Entry;
 
 use crate::util::collections::{HashMap, HashSet};
+use crate::util::time::{duration_to_sec, SlowTimer};
 
 use super::config::Config;
 use super::log_batch::{Command, LogBatch, LogItemType, OpType};
@@ -407,10 +408,13 @@ impl RaftEngine {
     }
 
     pub fn write(&self, log_batch: LogBatch, sync: bool) -> Result<()> {
+        let t = SlowTimer::new();
         let write_res = self.pipe_log.append_log_batch(&log_batch, sync);
         match write_res {
             Ok(file_num) => {
                 self.post_append_to_file(log_batch, file_num);
+                let dur = t.elapsed();
+                RAFT_ENGINE_WRITE_HISTOGRAM.observe(duration_to_sec(dur) as f64);
                 Ok(())
             }
             Err(e) => panic!("Append log batch to pipe log failed, error: {:?}", e),

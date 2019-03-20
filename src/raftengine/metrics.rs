@@ -53,7 +53,7 @@ lazy_static! {
     )
     .unwrap();
     pub static ref RAFT_ENGINE_APPEND_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raft_engine_append_duration_seconds",
+        "tikv_raftengine_append_duration_seconds",
         "Bucketed histogram of raft engine append duration",
         exponential_buckets(0.0005, 2.0, 20).unwrap()
     )
@@ -65,7 +65,7 @@ lazy_static! {
     )
     .unwrap();
     pub static ref APPEND_LOG_SIZE_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raft_engine_append_log_size",
+        "tikv_raftengine_append_log_size",
         "Bucketed histogram of raft engine append log size",
         vec![
             128.0, 256.0, 512.0, 1024.0, 4096.0, 65536.0, 262144.0, 524288.0, 1048576.0, 2097152.0,
