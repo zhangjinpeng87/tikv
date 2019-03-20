@@ -489,8 +489,7 @@ impl LogBatch {
                 let log_batch = LogBatch::new();
                 loop {
                     if items_count == 0 {
-                        // 4 bytes checksum
-                        reader.consume(4);
+                        assert!(reader.is_empty());
                         break;
                     }
 
