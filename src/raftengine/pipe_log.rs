@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::u64;
 
-#[cfg(target_os = "linux")]
 use crate::util::time::{duration_to_sec, SlowTimer};
 
 use super::log_batch::{LogBatch, LogItemType};
@@ -243,6 +242,8 @@ impl PipeLog {
     fn append(&self, content: &[u8], sync: bool) -> Result<(u64, u64)> {
         APPEND_LOG_SIZE_HISTOGRAM.observe(content.len() as f64);
 
+        let t = SlowTimer::new();
+
         let (active_log_fd, mut active_log_size, last_sync_size, file_num, offset) = {
             let manager = self.log_manager.read().unwrap();
             (
@@ -265,7 +266,6 @@ impl PipeLog {
                 )
             };
             while active_log_capacity < new_size {
-                let t = SlowTimer::new();
                 let allocate_ret = unsafe {
                     libc::fallocate(
                         active_log_fd,
@@ -274,8 +274,6 @@ impl PipeLog {
                         FILE_ALLOCATE_SIZE as libc::off_t,
                     )
                 };
-                let dur = t.elapsed();
-                PRE_ALLOCATE_DISK_SPACE_HISTOGRAM.observe(duration_to_sec(dur) as f64);
 
                 if allocate_ret != 0 {
                     panic!(
@@ -339,6 +337,9 @@ impl PipeLog {
         if active_log_size >= self.rotate_size {
             self.rotate_log();
         }
+
+        let dur = t.elapsed();
+        RAFT_ENGINE_APPEND_HISTOGRAM.observe(duration_to_sec(dur) as f64);
 
         Ok((file_num, offset))
     }
