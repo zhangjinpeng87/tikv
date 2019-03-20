@@ -318,6 +318,9 @@ impl PipeLog {
             manager.active_log_size = active_log_size;
         }
 
+        let dur = t.elapsed();
+        RAFT_ENGINE_APPEND_HISTOGRAM.observe(duration_to_sec(dur) as f64);
+
         // Sync data if needed.
         if sync
             || self.bytes_per_sync > 0 && active_log_size - last_sync_size >= self.bytes_per_sync
@@ -339,7 +342,7 @@ impl PipeLog {
         }
 
         let dur = t.elapsed();
-        RAFT_ENGINE_APPEND_HISTOGRAM.observe(duration_to_sec(dur) as f64);
+        RAFT_ENGINE_SYNC_HISTOGRAM.observe(duration_to_sec(dur) as f64);
 
         Ok((file_num, offset))
     }
