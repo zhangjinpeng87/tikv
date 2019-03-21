@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::u64;
 
-use crate::util::time::{duration_to_sec, SlowTimer};
-
 use super::log_batch::{LogBatch, LogItemType};
 use super::metrics::*;
 use super::Result;
@@ -242,8 +240,6 @@ impl PipeLog {
     fn append(&self, content: &[u8], sync: bool) -> Result<(u64, u64)> {
         APPEND_LOG_SIZE_HISTOGRAM.observe(content.len() as f64);
 
-        let t = SlowTimer::new();
-
         let (active_log_fd, mut active_log_size, last_sync_size, file_num, offset) = {
             let manager = self.log_manager.read().unwrap();
             (
@@ -318,9 +314,6 @@ impl PipeLog {
             manager.active_log_size = active_log_size;
         }
 
-        let dur = t.elapsed();
-        RAFT_ENGINE_APPEND_HISTOGRAM.observe(duration_to_sec(dur) as f64);
-
         // Sync data if needed.
         if sync
             || self.bytes_per_sync > 0 && active_log_size - last_sync_size >= self.bytes_per_sync
@@ -340,9 +333,6 @@ impl PipeLog {
         if active_log_size >= self.rotate_size {
             self.rotate_log();
         }
-
-        let dur = t.elapsed();
-        RAFT_ENGINE_SYNC_HISTOGRAM.observe(duration_to_sec(dur) as f64);
 
         Ok((file_num, offset))
     }
@@ -651,14 +641,14 @@ mod tests {
 
         // truncate file
         pipe_log
-            .truncate_active_log((FILE_MAGIC_HEADER.len() + VERSION.len()) as u64)
+            .truncate_active_log(FILE_MAGIC_HEADER.len() + VERSION.len())
             .unwrap();
         assert_eq!(
             pipe_log.active_log_size(),
             FILE_MAGIC_HEADER.len() + VERSION.len()
         );
         assert!(pipe_log
-            .truncate_active_log((FILE_MAGIC_HEADER.len() + VERSION.len() + s_content.len()) as u64)
+            .truncate_active_log(FILE_MAGIC_HEADER.len() + VERSION.len() + s_content.len())
             .is_err());
 
         // read next file

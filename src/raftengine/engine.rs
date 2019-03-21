@@ -410,8 +410,6 @@ impl RaftEngine {
     pub fn write(&self, log_batch: LogBatch, sync: bool) -> Result<()> {
         let t = SlowTimer::new();
         let write_res = self.pipe_log.append_log_batch(&log_batch, sync);
-        let dur = t.elapsed();
-        RAFT_ENGINE_APPEND_LOG_BATCH_HISTOGRAM.observe(duration_to_sec(dur) as f64);
         match write_res {
             Ok(file_num) => {
                 self.post_append_to_file(log_batch, file_num);

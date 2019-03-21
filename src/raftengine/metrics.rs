@@ -52,39 +52,9 @@ lazy_static! {
         "Total number of read from file happens"
     )
     .unwrap();
-    pub static ref RAFT_ENGINE_APPEND_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raftengine_append_duration_seconds",
-        "Bucketed histogram of raft engine append duration",
-        exponential_buckets(0.0005, 2.0, 20).unwrap()
-    )
-    .unwrap();
-    pub static ref RAFT_ENGINE_APPEND_LOG_BATCH_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raftengine_append_log_batch_duration_seconds",
-        "Bucketed histogram of raft engine append log batch duration",
-        exponential_buckets(0.0005, 2.0, 20).unwrap()
-    )
-    .unwrap();
     pub static ref RAFT_ENGINE_WRITE_HISTOGRAM: Histogram = register_histogram!(
         "tikv_raftengine_write_duration_seconds",
         "Bucketed histogram of raft engine write duration",
-        exponential_buckets(0.0005, 2.0, 20).unwrap()
-    )
-    .unwrap();
-    pub static ref RAFT_ENGINE_ENCODE_TO_BYTES_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raftengine_encode_to_bytes_duration_seconds",
-        "Bucketed histogram of raft engine encoding duration",
-        exponential_buckets(0.0005, 2.0, 20).unwrap()
-    )
-    .unwrap();
-    pub static ref RAFT_ENGINE_COMPRESSION_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raftengine_compression_duration_seconds",
-        "Bucketed histogram of raft engine compression duration",
-        exponential_buckets(0.0005, 2.0, 20).unwrap()
-    )
-    .unwrap();
-    pub static ref RAFT_ENGINE_SYNC_HISTOGRAM: Histogram = register_histogram!(
-        "tikv_raftengine_sync_duration_seconds",
-        "Bucketed histogram of raft engine sync duration",
         exponential_buckets(0.0005, 2.0, 20).unwrap()
     )
     .unwrap();
