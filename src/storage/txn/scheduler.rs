@@ -41,13 +41,14 @@ use crate::storage::engine::Result as EngineResult;
 use crate::storage::Key;
 use crate::storage::{Command, Engine, Error as StorageError, StorageCb};
 use crate::util::collections::HashMap;
-use crate::util::threadpool::{ThreadPool, ThreadPoolBuilder};
 use crate::util::worker::{self, Runnable};
+
+use tokio_threadpool::{Builder as ThreadPoolBuilder, ThreadPool};
 
 use super::super::metrics::*;
 use super::latch::{Latches, Lock};
 use super::process::{
-    execute_callback, Executor, ProcessResult, SchedContext, SchedContextFactory, Task,
+    execute_callback, Executor, ProcessResult, Task,
 };
 use super::Error;
 
@@ -163,10 +164,10 @@ pub struct Scheduler<E: Engine> {
     sched_pending_write_threshold: usize,
 
     // worker pool
-    worker_pool: ThreadPool<SchedContext<E>>,
+    worker_pool: ThreadPool,
 
     // high priority commands will be delivered to this pool
-    high_priority_pool: ThreadPool<SchedContext<E>>,
+    high_priority_pool: ThreadPool,
 
     // used to control write flow
     running_write_bytes: usize,
@@ -181,7 +182,7 @@ impl<E: Engine> Scheduler<E> {
         worker_pool_size: usize,
         sched_pending_write_threshold: usize,
     ) -> Self {
-        let factory = SchedContextFactory::new(engine.clone());
+        // let factory = SchedContextFactory::new(engine.clone());
         Scheduler {
             engine,
             // TODO: GC these two maps.
@@ -191,10 +192,13 @@ impl<E: Engine> Scheduler<E> {
             id_alloc: 0,
             latches: Latches::new(concurrency),
             sched_pending_write_threshold,
-            worker_pool: ThreadPoolBuilder::new(thd_name!("sched-worker-pool"), factory.clone())
-                .thread_count(worker_pool_size)
+            worker_pool: ThreadPoolBuilder::new()
+                .pool_size(worker_pool_size)
+                .name_prefix("sched-worker-pool")
                 .build(),
-            high_priority_pool: ThreadPoolBuilder::new(thd_name!("sched-high-pri-pool"), factory)
+            high_priority_pool: ThreadPoolBuilder::new()
+                .pool_size(1)
+                .name_prefix("sched-high-pri-pool")
                 .build(),
             running_write_bytes: 0,
         }
@@ -248,9 +252,10 @@ impl<E: Engine> Scheduler<E> {
             CommandPri::Low | CommandPri::Normal => &self.worker_pool,
             CommandPri::High => &self.high_priority_pool,
         };
-        let pool_scheduler = pool.scheduler();
+        let pool_scheduler = pool.sender().clone();
         let scheduler = self.scheduler.clone();
-        Executor::new(scheduler, pool_scheduler)
+        let engine = self.engine.clone();
+        Executor::new(scheduler, pool_scheduler, engine)
     }
 
     /// Event handler for new command.
@@ -466,12 +471,8 @@ impl<E: Engine> Runnable<Msg> for Scheduler<E> {
     }
 
     fn shutdown(&mut self) {
-        if let Err(e) = self.worker_pool.stop() {
-            error!("scheduler run err when worker pool stop"; "err" => ?e);
-        }
-        if let Err(e) = self.high_priority_pool.stop() {
-            error!("scheduler run err when high priority pool stop"; "err" => ?e);
-        }
+        //        self.worker_pool.shutdown_now().wait().unwrap();
+        //        self.high_priority_pool.shutdown_now().wait().unwrap();
         info!("scheduler stopped");
     }
 }

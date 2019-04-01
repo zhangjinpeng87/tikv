@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use futures::future;
 use std::mem;
 use std::thread;
 use std::time::Duration;
@@ -18,6 +19,8 @@ use std::u64;
 
 use kvproto::kvrpcpb::{CommandPri, Context, LockInfo};
 use prometheus::local::LocalHistogramVec;
+
+use tokio_threadpool::Sender as ThreadPoolSender;
 
 use crate::storage::engine::{CbContext, Modify, Result as EngineResult};
 use crate::storage::mvcc::{
@@ -29,8 +32,7 @@ use crate::storage::{
 };
 use crate::storage::{Key, MvccInfo, Value};
 use crate::util::collections::HashMap;
-use crate::util::threadpool::{
-    self, Context as ThreadContext, ContextFactory as ThreadContextFactory,
+use crate::util::threadpool::{Context as ThreadContext, ContextFactory as ThreadContextFactory,
 };
 use crate::util::time::SlowTimer;
 use crate::util::worker::{self, ScheduleError};
@@ -122,19 +124,19 @@ impl Task {
 
 pub struct Executor<E: Engine> {
     // We put time consuming tasks to the thread pool.
-    pool: Option<threadpool::Scheduler<SchedContext<E>>>,
+    pool: Option<ThreadPoolSender>,
     // And the tasks completes we post a completion to the `Scheduler`.
     scheduler: Option<worker::Scheduler<Msg>>,
+
+    engine: Option<E>,
 }
 
 impl<E: Engine> Executor<E> {
-    pub fn new(
-        scheduler: worker::Scheduler<Msg>,
-        pool: threadpool::Scheduler<SchedContext<E>>,
-    ) -> Self {
+    pub fn new(scheduler: worker::Scheduler<Msg>, pool: ThreadPoolSender, engine: E) -> Self {
         Executor {
             scheduler: Some(scheduler),
             pool: Some(pool),
+            engine: Some(engine),
         }
     }
 
@@ -142,8 +144,12 @@ impl<E: Engine> Executor<E> {
         self.scheduler.take().unwrap()
     }
 
-    fn take_pool(&mut self) -> threadpool::Scheduler<SchedContext<E>> {
+    fn take_pool(&mut self) -> ThreadPoolSender {
         self.pool.take().unwrap()
+    }
+
+    fn take_engine(&mut self) -> E {
+        self.engine.take().unwrap()
     }
 
     /// Start the execution of the task.
@@ -193,25 +199,20 @@ impl<E: Engine> Executor<E> {
             task.cmd.mut_context().set_term(term);
         }
         let pool = self.take_pool();
+        let engine = self.take_engine();
         let readonly = task.cmd.readonly();
-        pool.schedule(move |ctx: &mut SchedContext<E>| {
+        pool.spawn(future::lazy(move || {
             fail_point!("scheduler_async_snapshot_finish");
-
-            let _processing_read_timer = ctx
-                .processing_read_duration
-                .with_label_values(&[tag])
-                .start_coarse_timer();
 
             let region_id = task.region_id;
             let ts = task.ts;
             let timer = SlowTimer::new();
 
             let statistics = if readonly {
-                self.process_read(ctx, snapshot, task)
+                self.process_read(snapshot, task)
             } else {
-                self.process_write(ctx, snapshot, task)
+                self.process_write(engine, snapshot, task)
             };
-            ctx.add_statistics(tag, &statistics);
             slow_log!(
                 timer,
                 "[region {}] scheduler handle command: {}, ts: {}",
@@ -219,23 +220,19 @@ impl<E: Engine> Executor<E> {
                 tag,
                 ts
             );
-        });
+            future::ok(())
+        }));
     }
 
     /// Processes a read command within a worker thread, then posts `ReadFinished` message back to the
     /// `Scheduler`.
-    fn process_read(
-        mut self,
-        sched_ctx: &mut SchedContext<E>,
-        snapshot: E::Snap,
-        task: Task,
-    ) -> Statistics {
+    fn process_read(mut self, snapshot: E::Snap, task: Task) -> Statistics {
         fail_point!("txn_before_process_read");
         debug!("process read cmd in worker pool"; "cid" => task.cid);
         let tag = task.tag;
         let cid = task.cid;
         let mut statistics = Statistics::default();
-        let pr = match process_read_impl(sched_ctx, task.cmd, snapshot, &mut statistics) {
+        let pr = match process_read_impl(task.cmd, snapshot, &mut statistics) {
             Err(e) => ProcessResult::Failed { err: e.into() },
             Ok(pr) => pr,
         };
@@ -245,12 +242,7 @@ impl<E: Engine> Executor<E> {
 
     /// Processes a write command within a worker thread, then posts either a `WriteFinished`
     /// message if successful or a `FinishedWithErr` message back to the `Scheduler`.
-    fn process_write(
-        mut self,
-        sched_ctx: &SchedContext<E>,
-        snapshot: E::Snap,
-        task: Task,
-    ) -> Statistics {
+    fn process_write(mut self, engine: E, snapshot: E::Snap, task: Task) -> Statistics {
         fail_point!("txn_before_process_write");
         let tag = task.tag;
         let cid = task.cid;
@@ -289,7 +281,7 @@ impl<E: Engine> Executor<E> {
                         }
                     });
 
-                    if let Err(e) = sched_ctx.engine.async_write(&ctx, to_be_write, engine_cb) {
+                    if let Err(e) = engine.async_write(&ctx, to_be_write, engine_cb) {
                         SCHED_STAGE_COUNTER_VEC
                             .with_label_values(&[tag, "async_write_err"])
                             .inc();
@@ -318,10 +310,9 @@ impl<E: Engine> Executor<E> {
     }
 }
 
-fn process_read_impl<E: Engine>(
-    sched_ctx: &mut SchedContext<E>,
+fn process_read_impl<S: Snapshot>(
     mut cmd: Command,
-    snapshot: E::Snap,
+    snapshot: S,
     statistics: &mut Statistics,
 ) -> Result<ProcessResult> {
     let tag = cmd.tag();
@@ -401,10 +392,6 @@ fn process_read_impl<E: Engine>(
                 lock_info.set_key(key.into_raw()?);
                 locks.push(lock_info);
             }
-            sched_ctx
-                .command_keyread_duration
-                .with_label_values(&[tag])
-                .observe(locks.len() as f64);
             Ok(ProcessResult::Locks { locks })
         }
         Command::ResolveLock {
@@ -428,10 +415,6 @@ fn process_read_impl<E: Engine>(
             );
             statistics.add(reader.get_statistics());
             let (kv_pairs, has_remain) = result?;
-            sched_ctx
-                .command_keyread_duration
-                .with_label_values(&[tag])
-                .observe(kv_pairs.len() as f64);
             if kv_pairs.is_empty() {
                 Ok(ProcessResult::Res)
             } else {
