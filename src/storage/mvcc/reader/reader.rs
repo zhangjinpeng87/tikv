@@ -161,9 +161,14 @@ impl<S: Snapshot> MvccReader<S> {
             }
         } else {
             // use prefix bloom filter
-            let iter_opt = IterOption::default()
+            let start = key.as_encoded().clone();
+            let mut end = start.clone();
+            prefix_next(&mut end);
+            let mut iter_opt = IterOption::default()
                 .use_prefix_seek()
                 .set_prefix_same_as_start(true);
+            iter_opt.set_lower_bound(start);
+            iter_opt.set_upper_bound(end);
             let iter = self.snapshot.iter_cf(CF_WRITE, iter_opt, ScanMode::Mixed)?;
             self.write_cursor = Some(iter);
         }
@@ -484,6 +489,34 @@ impl<S: Snapshot> MvccReader<S> {
             props.add(&mvcc);
         }
         Some(props)
+    }
+}
+
+/// Calculate the smallest key which is larger than the key given.
+fn prefix_next(key: &mut Vec<u8>) {
+    if key.is_empty() {
+        key.push(0);
+        return;
+    }
+    let mut i = key.len() - 1;
+
+    // Add 1 to the last byte that is not 255, and set it's following bytes to 0.
+    loop {
+        if key[i] == 255 {
+            key[i] = 0;
+        } else {
+            key[i] += 1;
+            return;
+        }
+        if i == 0 {
+            // All bytes are 255. Append a 0 to the key.
+            for byte in key.iter_mut() {
+                *byte = 255;
+            }
+            key.push(0);
+            return;
+        }
+        i -= 1;
     }
 }
 
