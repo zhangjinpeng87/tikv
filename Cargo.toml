@@ -125,7 +125,8 @@ log_wrappers = { path = "components/log_wrappers" }
 git = "https://github.com/pingcap/murmur3.git"
 
 [dependencies.rocksdb_do_not_use]
-git = "https://github.com/pingcap/rust-rocksdb.git"
+git = "https://github.com/zhangjinpeng1987/rust-rocksdb.git"
+branch = "improve-prefix-seek"
 package = "rocksdb"
 
 [dependencies.prometheus]
