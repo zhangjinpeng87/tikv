@@ -177,6 +177,7 @@ enum SeekMode {
 pub struct IterOption {
     lower_bound: Option<Vec<u8>>,
     upper_bound: Option<Vec<u8>>,
+    prefix: Option<Vec<u8>>,
     prefix_same_as_start: bool,
     fill_cache: bool,
     seek_mode: SeekMode,
@@ -191,6 +192,7 @@ impl IterOption {
         IterOption {
             lower_bound,
             upper_bound,
+            prefix: None,
             prefix_same_as_start: false,
             fill_cache,
             seek_mode: SeekMode::TotalOrder,
@@ -216,6 +218,10 @@ impl IterOption {
     #[inline]
     pub fn set_lower_bound(&mut self, bound: Vec<u8>) {
         self.lower_bound = Some(bound);
+    }
+
+    pub fn set_prefix(&mut self, prefix: Vec<u8>) {
+        self.prefix = Some(prefix);
     }
 
     #[inline]
@@ -248,6 +254,9 @@ impl IterOption {
         if let Some(ref key) = self.upper_bound {
             opts.set_iterate_upper_bound(key);
         }
+        if let Some(ref prefix) = self.prefix {
+            opts.set_iterate_prefix(prefix);
+        }
         opts
     }
 }
@@ -257,6 +266,7 @@ impl Default for IterOption {
         IterOption {
             lower_bound: None,
             upper_bound: None,
+            prefix: None,
             prefix_same_as_start: false,
             fill_cache: true,
             seek_mode: SeekMode::TotalOrder,

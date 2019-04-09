@@ -167,8 +167,9 @@ impl<S: Snapshot> MvccReader<S> {
             let mut iter_opt = IterOption::default()
                 .use_prefix_seek()
                 .set_prefix_same_as_start(true);
-            iter_opt.set_lower_bound(start);
+            iter_opt.set_lower_bound(start.clone());
             iter_opt.set_upper_bound(end);
+            iter_opt.set_prefix(start);
             let iter = self.snapshot.iter_cf(CF_WRITE, iter_opt, ScanMode::Mixed)?;
             self.write_cursor = Some(iter);
         }
