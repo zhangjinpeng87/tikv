@@ -16,6 +16,7 @@ use std::ops::Deref;
 use std::option::Option;
 use std::sync::Arc;
 
+use crate::raftstore::store::keys;
 use crate::raftstore::Error;
 use crate::raftstore::Result;
 use crate::storage::engine::{
@@ -255,7 +256,8 @@ impl IterOption {
             opts.set_iterate_upper_bound(key);
         }
         if let Some(ref prefix) = self.prefix {
-            opts.set_iterate_prefix(prefix);
+            let p = keys::data_key(prefix);
+            opts.set_iterate_prefix(p.as_slice());
         }
         opts
     }
