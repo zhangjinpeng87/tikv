@@ -943,7 +943,7 @@ dependencies = [
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/zhangjinpeng1987/rust-rocksdb.git?branch=improve-prefix-seek#24aaaff518325f36c2765fc6e19207ff0d131710"
+source = "git+https://github.com/zhangjinpeng1987/rust-rocksdb.git?branch=improve-prefix-seek#96361dd75818a72bb68e1ec4645b76a825f1df1b"
 dependencies = [
  "bzip2-sys 0.1.7 (git+https://github.com/alexcrichton/bzip2-rs.git)",
  "cc 1.0.28 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1620,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/zhangjinpeng1987/rust-rocksdb.git?branch=improve-prefix-seek#24aaaff518325f36c2765fc6e19207ff0d131710"
+source = "git+https://github.com/zhangjinpeng1987/rust-rocksdb.git?branch=improve-prefix-seek#96361dd75818a72bb68e1ec4645b76a825f1df1b"
 dependencies = [
  "crc 1.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.45 (registry+https://github.com/rust-lang/crates.io-index)",
