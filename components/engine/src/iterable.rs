@@ -1,7 +1,9 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
+use super::DATA_KEY_PREFIX_LEN;
 pub use crate::rocks::{DBIterator, ReadOptions, DB};
 use crate::Result;
+use tikv_util::keybuilder::KeyBuilder;
 
 #[derive(Clone, PartialEq)]
 enum SeekMode {
@@ -10,9 +12,8 @@ enum SeekMode {
 }
 
 pub struct IterOption {
-    lower_bound: Option<Vec<u8>>,
-    upper_bound: Option<Vec<u8>>,
-    prefix: Option<Vec<u8>>,
+    lower_bound: Option<KeyBuilder>,
+    upper_bound: Option<KeyBuilder>,
     prefix_same_as_start: bool,
     fill_cache: bool,
     seek_mode: SeekMode,
@@ -20,14 +21,13 @@ pub struct IterOption {
 
 impl IterOption {
     pub fn new(
-        lower_bound: Option<Vec<u8>>,
-        upper_bound: Option<Vec<u8>>,
+        lower_bound: Option<KeyBuilder>,
+        upper_bound: Option<KeyBuilder>,
         fill_cache: bool,
     ) -> IterOption {
         IterOption {
             lower_bound,
             upper_bound,
-            prefix: None,
             prefix_same_as_start: false,
             fill_cache,
             seek_mode: SeekMode::TotalOrder,
@@ -46,13 +46,29 @@ impl IterOption {
     }
 
     #[inline]
+    pub fn fill_cache(&mut self, v: bool) {
+        self.fill_cache = v;
+    }
+
+    #[inline]
     pub fn lower_bound(&self) -> Option<&[u8]> {
         self.lower_bound.as_ref().map(|v| v.as_slice())
     }
 
     #[inline]
-    pub fn set_lower_bound(&mut self, bound: Vec<u8>) {
-        self.lower_bound = Some(bound);
+    pub fn set_lower_bound(&mut self, bound: &[u8], reserved_prefix_len: usize) {
+        let builder = KeyBuilder::from_slice(bound, reserved_prefix_len, 0);
+        self.lower_bound = Some(builder);
+    }
+
+    pub fn set_vec_lower_bound(&mut self, bound: Vec<u8>) {
+        self.lower_bound = Some(KeyBuilder::from_vec(bound, 0, 0));
+    }
+
+    pub fn set_lower_bound_prefix(&mut self, prefix: &[u8]) {
+        if let Some(ref mut builder) = self.lower_bound {
+            builder.set_prefix(prefix);
+        }
     }
 
     #[inline]
@@ -61,13 +77,19 @@ impl IterOption {
     }
 
     #[inline]
-    pub fn set_upper_bound(&mut self, bound: Vec<u8>) {
-        self.upper_bound = Some(bound);
+    pub fn set_upper_bound(&mut self, bound: &[u8], reserved_prefix_len: usize) {
+        let builder = KeyBuilder::from_slice(bound, reserved_prefix_len, 0);
+        self.upper_bound = Some(builder);
     }
 
-    #[inline]
-    pub fn set_prefix(&mut self, prefix: Vec<u8>) {
-        self.prefix = Some(prefix);
+    pub fn set_vec_upper_bound(&mut self, bound: Vec<u8>) {
+        self.upper_bound = Some(KeyBuilder::from_vec(bound, 0, 0));
+    }
+
+    pub fn set_upper_bound_prefix(&mut self, prefix: &[u8]) {
+        if let Some(ref mut builder) = self.upper_bound {
+            builder.set_prefix(prefix);
+        }
     }
 
     #[inline]
@@ -76,7 +98,7 @@ impl IterOption {
         self
     }
 
-    pub fn build_read_opts(&self) -> ReadOptions {
+    pub fn build_read_opts(self) -> ReadOptions {
         let mut opts = ReadOptions::new();
         opts.fill_cache(self.fill_cache);
         if self.total_order_seek_used() {
@@ -84,14 +106,11 @@ impl IterOption {
         } else if self.prefix_same_as_start {
             opts.set_prefix_same_as_start(true);
         }
-        if let Some(ref key) = self.lower_bound {
-            opts.set_iterate_lower_bound(key);
+        if let Some(builder) = self.lower_bound {
+            opts.set_iterate_lower_bound(builder.build());
         }
-        if let Some(ref key) = self.upper_bound {
-            opts.set_iterate_upper_bound(key);
-        }
-        if let Some(ref key) = self.prefix {
-            opts.set_iterate_prefix(key);
+        if let Some(builder) = self.upper_bound {
+            opts.set_iterate_upper_bound(builder.build());
         }
         opts
     }
@@ -102,7 +121,6 @@ impl Default for IterOption {
         IterOption {
             lower_bound: None,
             upper_bound: None,
-            prefix: None,
             prefix_same_as_start: false,
             fill_cache: true,
             seek_mode: SeekMode::TotalOrder,
@@ -120,8 +138,9 @@ pub trait Iterable {
     where
         F: FnMut(&[u8], &[u8]) -> Result<bool>,
     {
-        let iter_opt =
-            IterOption::new(Some(start_key.to_vec()), Some(end_key.to_vec()), fill_cache);
+        let start = KeyBuilder::from_slice(start_key, DATA_KEY_PREFIX_LEN, 0);
+        let end = KeyBuilder::from_slice(end_key, DATA_KEY_PREFIX_LEN, 0);
+        let iter_opt = IterOption::new(Some(start), Some(end), fill_cache);
         scan_impl(self.new_iterator(iter_opt), start_key, f)
     }
 
@@ -137,8 +156,9 @@ pub trait Iterable {
     where
         F: FnMut(&[u8], &[u8]) -> Result<bool>,
     {
-        let iter_opt =
-            IterOption::new(Some(start_key.to_vec()), Some(end_key.to_vec()), fill_cache);
+        let start = KeyBuilder::from_slice(start_key, DATA_KEY_PREFIX_LEN, 0);
+        let end = KeyBuilder::from_slice(end_key, DATA_KEY_PREFIX_LEN, 0);
+        let iter_opt = IterOption::new(Some(start), Some(end), fill_cache);
         scan_impl(self.new_iterator_cf(cf, iter_opt)?, start_key, f)
     }
 
