@@ -152,15 +152,14 @@ impl<S: Snapshot> MvccReader<S> {
             }
         } else {
             // use prefix bloom filter
-            let start = key.as_encoded().clone();
-            let mut end = start.clone();
-            prefix_next(&mut end);
+            let mut upper_bound = key.as_encoded().clone();
+            prefix_next(&mut upper_bound);
             let mut iter_opt = IterOption::default()
                 .use_prefix_seek()
                 .set_prefix_same_as_start(true);
-            iter_opt.set_lower_bound(start.clone());
-            iter_opt.set_upper_bound(end);
-            iter_opt.set_prefix(start);
+            iter_opt.set_lower_bound(key.as_encoded(), 1);
+            iter_opt.set_vec_upper_bound(upper_bound, 1);
+            iter_opt.set_prefix(key.as_encoded(), 1);
             let iter = self.snapshot.iter_cf(CF_WRITE, iter_opt, ScanMode::Mixed)?;
             self.write_cursor = Some(iter);
         }

@@ -14,6 +14,7 @@ enum SeekMode {
 pub struct IterOption {
     lower_bound: Option<KeyBuilder>,
     upper_bound: Option<KeyBuilder>,
+    prefix: Option<KeyBuilder>,
     prefix_same_as_start: bool,
     fill_cache: bool,
     seek_mode: SeekMode,
@@ -28,6 +29,7 @@ impl IterOption {
         IterOption {
             lower_bound,
             upper_bound,
+            prefix: None,
             prefix_same_as_start: false,
             fill_cache,
             seek_mode: SeekMode::TotalOrder,
@@ -50,6 +52,11 @@ impl IterOption {
         self.fill_cache = v;
     }
 
+    pub fn set_prefix(&mut self, prefix: &[u8], reserved_prefix_len: usize) {
+        let builder = KeyBuilder::from_slice(prefix, reserved_prefix_len, 0);
+        self.prefix = Some(builder);
+    }
+
     #[inline]
     pub fn lower_bound(&self) -> Option<&[u8]> {
         self.lower_bound.as_ref().map(|v| v.as_slice())
@@ -61,8 +68,8 @@ impl IterOption {
         self.lower_bound = Some(builder);
     }
 
-    pub fn set_vec_lower_bound(&mut self, bound: Vec<u8>) {
-        self.lower_bound = Some(KeyBuilder::from_vec(bound, 0, 0));
+    pub fn set_vec_lower_bound(&mut self, bound: Vec<u8>, reserved_prefix_len: usize) {
+        self.lower_bound = Some(KeyBuilder::from_vec(bound, reserved_prefix_len, 0));
     }
 
     pub fn set_lower_bound_prefix(&mut self, prefix: &[u8]) {
@@ -82,8 +89,8 @@ impl IterOption {
         self.upper_bound = Some(builder);
     }
 
-    pub fn set_vec_upper_bound(&mut self, bound: Vec<u8>) {
-        self.upper_bound = Some(KeyBuilder::from_vec(bound, 0, 0));
+    pub fn set_vec_upper_bound(&mut self, bound: Vec<u8>, reserved_prefix_len: usize) {
+        self.upper_bound = Some(KeyBuilder::from_vec(bound, reserved_prefix_len, 0));
     }
 
     pub fn set_upper_bound_prefix(&mut self, prefix: &[u8]) {
@@ -112,6 +119,10 @@ impl IterOption {
         if let Some(builder) = self.upper_bound {
             opts.set_iterate_upper_bound(builder.build());
         }
+        if let Some(mut builder) = self.prefix {
+            builder.set_prefix(b"z");
+            opts.set_iterate_prefix(builder.build());
+        }
         opts
     }
 }
@@ -121,6 +132,7 @@ impl Default for IterOption {
         IterOption {
             lower_bound: None,
             upper_bound: None,
+            prefix: None,
             prefix_same_as_start: false,
             fill_cache: true,
             seek_mode: SeekMode::TotalOrder,
