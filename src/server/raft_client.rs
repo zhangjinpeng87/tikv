@@ -35,17 +35,20 @@ static CONN_ID: AtomicI32 = AtomicI32::new(0);
 static NEW_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FREE_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-struct MyVec<T>(Vec<T>);
+struct MyVec<T> {
+    vec: Option<Vec<T>>,
+}
 
 impl<T> MyVec<T> {
     pub fn new(vec: Vec<T>) -> MyVec<T> {
         NEW_TOTAL.fetch_add(1, Ordering::SeqCst);
-        MyVec(vec)
+        MyVec { vec: Some(vec) }
     }
+}
 
-    pub fn into_inner(self) -> Vec<T> {
+impl<T> Drop for MyVec<T> {
+    fn drop(&mut self) {
         FREE_TOTAL.fetch_add(1, Ordering::SeqCst);
-        self.0
     }
 }
 
@@ -95,7 +98,7 @@ impl Conn {
                 .select(
                     sink.sink_map_err(Error::from)
                         .send_all(
-                            rx.map(|v: MyVec<_>| v.into_inner())
+                            rx.map(|mut v: MyVec<_>| v.vec.take().unwrap())
                                 .map(stream::iter_ok)
                                 .flatten()
                                 .map_err(|()| Error::Sink),
@@ -168,7 +171,9 @@ impl RaftClient {
         conn.buffer
             .as_mut()
             .unwrap()
-            .0
+            .vec
+            .as_mut()
+            .unwrap()
             .push((msg, WriteFlags::default().buffer_hint(true)));
         Ok(())
     }
@@ -187,13 +192,21 @@ impl RaftClient {
                 return false;
             }
 
-            if conn.buffer.as_ref().unwrap().0.is_empty() {
+            if conn
+                .buffer
+                .as_ref()
+                .unwrap()
+                .vec
+                .as_ref()
+                .unwrap()
+                .is_empty()
+            {
                 return true;
             }
 
             counter += 1;
             let mut msgs = conn.buffer.take().unwrap();
-            msgs.0.last_mut().unwrap().1 = WriteFlags::default();
+            msgs.vec.as_mut().unwrap().last_mut().unwrap().1 = WriteFlags::default();
             if let Err(e) = conn.stream.unbounded_send(msgs) {
                 error!(
                     "server: drop conn with tikv endpoint {} flush conn error: {:?}",
