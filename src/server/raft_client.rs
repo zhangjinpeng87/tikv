@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::Arc;
 
 use futures::sync::mpsc::{self, UnboundedSender};
@@ -32,8 +32,7 @@ const MAX_GRPC_SEND_MSG_LEN: i32 = 10 * 1024 * 1024;
 const PRESERVED_MSG_BUFFER_COUNT: usize = 1024;
 
 static CONN_ID: AtomicI32 = AtomicI32::new(0);
-static NEW_TOTAL: AtomicU64 = AtomicU64::new(0);
-static FREE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static TOTAL_VEC: AtomicI64 = AtomicI64::new(0);
 
 struct MyVec<T> {
     vec: Option<Vec<T>>,
@@ -41,14 +40,14 @@ struct MyVec<T> {
 
 impl<T> MyVec<T> {
     pub fn new(vec: Vec<T>) -> MyVec<T> {
-        NEW_TOTAL.fetch_add(1, Ordering::SeqCst);
+        TOTAL_VEC.fetch_add(1, Ordering::SeqCst);
         MyVec { vec: Some(vec) }
     }
 }
 
 impl<T> Drop for MyVec<T> {
     fn drop(&mut self) {
-        FREE_TOTAL.fetch_add(1, Ordering::SeqCst);
+        TOTAL_VEC.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -228,8 +227,7 @@ impl RaftClient {
         if counter > 0 {
             RAFT_MESSAGE_FLUSH_COUNTER.inc_by(counter as i64);
         }
-        RAFT_CLIENT_VEC_NEW_TOTAL.set(NEW_TOTAL.load(Ordering::SeqCst) as f64);
-        RAFT_CLIENT_VEC_FREE_TOTAL.set(FREE_TOTAL.load(Ordering::SeqCst) as f64);
+        RAFT_CLIENT_VEC_TOTAL.set(TOTAL_VEC.load(Ordering::SeqCst) as f64);
     }
 }
 

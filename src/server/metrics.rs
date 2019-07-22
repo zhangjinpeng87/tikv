@@ -93,12 +93,8 @@ lazy_static! {
         "tikv_server_raft_message_flush_total",
         "Total number of raft messages flushed"
     ).unwrap();
-    pub static ref RAFT_CLIENT_VEC_NEW_TOTAL: Gauge = register_gauge!(
-        "tikv_raft_client_vec_new_total",
-        "Total number of new vec in raft client"
-    ).unwrap();
-    pub static ref RAFT_CLIENT_VEC_FREE_TOTAL: Gauge = register_gauge!(
-        "tikv_raft_client_vec_free_total",
-        "Total number of free vec in raft client"
+    pub static ref RAFT_CLIENT_VEC_TOTAL: Gauge = register_gauge!(
+        "tikv_raft_client_vec_total",
+        "Total number of existed vec in raft client"
     ).unwrap();
 }
