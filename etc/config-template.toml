@@ -9,6 +9,7 @@
 ## Note that `debug` and `trace` are only available in development builds.
 # log-level = "info"
 
+
 ## File to store logs.
 ## If it is not set, logs will be appended to stderr.
 # log-file = ""
