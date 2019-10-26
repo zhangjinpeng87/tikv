@@ -82,12 +82,11 @@ pub struct Config {
     pub stats_concurrency: usize,
     pub heavy_load_threshold: usize,
     pub heavy_load_wait_duration: ReadableDuration,
+    // Store type means what type this store is, possible type are performance and storage.
+    pub store_type: String,
 
     // Server labels to specify some attributes about this server.
     pub labels: HashMap<String, String>,
-
-    // Store type means what type this store is, possible type are performance and storage.
-    pub store_type: String,
 
     // deprecated. use readpool.coprocessor.xx_concurrency.
     #[doc(hidden)]
