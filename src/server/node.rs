@@ -84,6 +84,11 @@ where
             labels.push(label);
         }
         store.set_labels(labels.into());
+        match cfg.store_type.as_str() {
+            "performance" => store.set_store_type(metapb::StoreType::Performance),
+            "storage" => store.set_store_type(metapb::StoreType::Storage),
+            _ => store.set_store_type(metapb::StoreType::Performance),
+        }
 
         Node {
             cluster_id: cfg.cluster_id,

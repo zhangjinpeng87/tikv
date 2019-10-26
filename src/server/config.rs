@@ -86,6 +86,9 @@ pub struct Config {
     // Server labels to specify some attributes about this server.
     pub labels: HashMap<String, String>,
 
+    // Store type means what type this store is, possible type are performance and storage.
+    pub store_type: String,
+
     // deprecated. use readpool.coprocessor.xx_concurrency.
     #[doc(hidden)]
     #[serde(skip_serializing)]
@@ -108,6 +111,7 @@ impl Default for Config {
             cluster_id: DEFAULT_CLUSTER_ID,
             addr: DEFAULT_LISTENING_ADDR.to_owned(),
             labels: HashMap::default(),
+            store_type: String::from("performance"),
             advertise_addr: DEFAULT_ADVERTISE_LISTENING_ADDR.to_owned(),
             status_addr: DEFAULT_STATUS_ADDR.to_owned(),
             status_thread_pool_size: 1,

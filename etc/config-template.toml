@@ -113,6 +113,9 @@
 ## Attributes about this server, e.g. `{ zone = "us-west-1", disk = "ssd" }`.
 # labels = {}
 
+## Store type, support type is performance and storage.
+# store-type = performance
+
 [storage]
 ## The path to RocksDB directory.
 # data-dir = "/tmp/tikv/store"

@@ -51,6 +51,7 @@ fn test_serde_custom_tikv_config() {
         cluster_id: 0, // KEEP IT ZERO, it is skipped by serde.
         addr: "example.com:443".to_owned(),
         labels: map! { "a".to_owned() => "b".to_owned() },
+        store_type: "storage".to_owned(),
         advertise_addr: "example.com:443".to_owned(),
         status_addr: "example.com:443".to_owned(),
         status_thread_pool_size: 1,
