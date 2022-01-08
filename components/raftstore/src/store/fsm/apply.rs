@@ -520,6 +520,7 @@ where
             self.perf_context.report_metrics();
             self.sync_log_hint = false;
             let data_size = self.kv_wb().data_size();
+            STORE_BATCH_WRITE_TO_DB_BYTES_COUNTER.inc_by(data_size as u64);
             if data_size > APPLY_WB_SHRINK_SIZE {
                 // Control the memory usage for the WriteBatch. Whether it's `RocksWriteBatch` or
                 // `RocksWriteBatchVec` depends on the `enable_multi_batch_write` configuration.

@@ -475,6 +475,11 @@ lazy_static! {
             "tikv_raftstore_gc_raft_log_total",
             "Total number of GC raft log."
         ).unwrap();
+    
+    pub static ref STORE_BATCH_WRITE_TO_DB_BYTES_COUNTER: IntCounter = register_int_counter!(
+        "tikv_store_batch_write_to_db_bytes",
+        "Total number of writing bytes by apply fsm write_to_db.",
+    ).unwrap();
 
     pub static ref UPDATE_REGION_SIZE_BY_COMPACTION_COUNTER: IntCounter =
         register_int_counter!(
