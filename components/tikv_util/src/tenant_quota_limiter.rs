@@ -2,8 +2,9 @@
 
 //! Provides util functions to manage share properties across threads.
 
+use collections::HashMap;
+
 use super::time::Limiter;
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -93,62 +94,79 @@ impl TenantQuotaLimiter {
 
     // Refresh quota if there are some changes
     // tenant_quotas: tenant_id -> (write_bytes_per_sec, read_milli_cpu)
-    pub fn refresh_quota(&self, tenant_quotas: Vec<(u32, (u64, u32))>) {
+    pub fn refresh_quota(&self, mut tenant_quotas: Vec<(u32, (u64, u32))>) {
         if self
             .quota_is_updating
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            let (mut write_quotas, mut read_quotas) = tenant_quotas.drain(..).fold(
+                (HashMap::default(), HashMap::default()),
+                |(mut wm, mut rm), (tenant_id, (wq, rq))| {
+                    wm.insert(tenant_id, wq);
+                    rm.insert(tenant_id, rq);
+                    (wm, rm)
+                },
+            );
+
             // Acuire read lock to check if there is any change
-            let mut idxs_write = vec![];
-            let mut idxs_read = vec![];
+            let mut write_quota_updates = vec![];
+            let mut read_quota_updates = vec![];
             {
                 let wlimiters = self.tenant_write_limiters.read().unwrap();
                 let rlimiters = self.tenant_read_limiters.read().unwrap();
-                for (idx, quota) in tenant_quotas.iter().enumerate() {
-                    if let Some(l) = wlimiters.get(&quota.0) {
-                        if l.0.speed_limit() as u64 != quota.1.0 {
-                            idxs_write.push(idx);
-                        }
-                    } else if quota.1.0 > 0 {
-                        idxs_write.push(idx);
-                    }
 
-                    if let Some(l) = rlimiters.get(&quota.0) {
-                        if l.0.speed_limit() as u64 != quota.1.1 as u64 * 1000 {
-                            idxs_read.push(idx)
+                for (tenant_id, wlimiter) in wlimiters.iter() {
+                    if let Some(quota) = write_quotas.remove(tenant_id) {
+                        if wlimiter.0.speed_limit() as u64 != quota {
+                            write_quota_updates.push((*tenant_id, quota))
                         }
-                    } else if quota.1.1 > 0 {
-                        idxs_read.push(idx);
+                    } else {
+                        write_quota_updates.push((*tenant_id, 0));
                     }
                 }
+                for (tenant_id, quota) in write_quotas.drain() {
+                    write_quota_updates.push((tenant_id, quota));
+                }
+
+                for (tenant_id, rlimiter) in rlimiters.iter() {
+                    if let Some(quota) = read_quotas.remove(tenant_id) {
+                        if rlimiter.0.speed_limit() as u64 != quota as u64 * 1000 {
+                            read_quota_updates.push((*tenant_id, quota))
+                        }
+                    } else {
+                        read_quota_updates.push((*tenant_id, 0));
+                    }
+                }
+                for (tenant_id, quota) in read_quotas.drain() {
+                    read_quota_updates.push((tenant_id, quota));
+                }
             }
+
             // Acquire write lock to update changes
-            if !idxs_write.is_empty() {
+            if !write_quota_updates.is_empty() {
                 let mut wlimiters = self.tenant_write_limiters.write().unwrap();
-                for idx in idxs_write {
-                    let quota = tenant_quotas[idx];
+                for (tenant_id, quota) in write_quota_updates.drain(..) {
                     let limiter = wlimiters
-                        .entry(quota.0)
-                        .or_insert_with(|| Arc::new(WriteQuotaLimiter::new(quota.1.0)));
-                    if quota.1.0 == 0 {
+                        .entry(tenant_id)
+                        .or_insert_with(|| Arc::new(WriteQuotaLimiter::new(quota)));
+                    if quota == 0 {
                         (*limiter).0.set_speed_limit(f64::INFINITY);
                     } else {
-                        (*limiter).0.set_speed_limit(quota.1.0 as f64);
+                        (*limiter).0.set_speed_limit(quota as f64);
                     }
                 }
             }
-            if !idxs_read.is_empty() {
+            if !read_quota_updates.is_empty() {
                 let mut rlimiters = self.tenant_read_limiters.write().unwrap();
-                for idx in idxs_read {
-                    let quota = tenant_quotas[idx];
+                for (tenant_id, quota) in read_quota_updates.drain(..) {
                     let limiter = rlimiters
-                        .entry(quota.0)
-                        .or_insert_with(|| Arc::new(ReadQuotaLimiter::new(quota.1.1)));
-                    if quota.1.1 == 0 {
+                        .entry(tenant_id)
+                        .or_insert_with(|| Arc::new(ReadQuotaLimiter::new(quota)));
+                    if quota == 0 {
                         (*limiter).0.set_speed_limit(f64::INFINITY);
                     } else {
-                        (*limiter).0.set_speed_limit(quota.1.1 as f64 * 1000_f64);
+                        (*limiter).0.set_speed_limit(quota as f64 * 1000_f64);
                     }
                 }
             }
@@ -180,5 +198,23 @@ mod tests {
 
         assert!(quota_limiter.get_write_quota_limiter(3).is_none());
         assert!(quota_limiter.get_read_quota_limiter(3).is_none());
+
+        let quota = vec![(2, (100, 200)), (3, (300, 400))];
+        quota_limiter.refresh_quota(quota);
+
+        let wlimiter1 = quota_limiter.get_write_quota_limiter(1).unwrap();
+        assert!(wlimiter1.0.speed_limit().is_infinite());
+        let rlimiter1 = quota_limiter.get_read_quota_limiter(1).unwrap();
+        assert!(rlimiter1.0.speed_limit().is_infinite());
+
+        let wlimiter2 = quota_limiter.get_write_quota_limiter(2).unwrap();
+        assert!((wlimiter2.0.speed_limit() - 100_f64).abs() < f64::EPSILON);
+        let rlimiter2 = quota_limiter.get_read_quota_limiter(2).unwrap();
+        assert!((rlimiter2.0.speed_limit() - 200_f64 * 1000_f64).abs() < f64::EPSILON);
+
+        let wlimiter3 = quota_limiter.get_write_quota_limiter(3).unwrap();
+        assert!((wlimiter3.0.speed_limit() - 300_f64).abs() < f64::EPSILON);
+        let rlimiter3 = quota_limiter.get_read_quota_limiter(3).unwrap();
+        assert!((rlimiter3.0.speed_limit() - 400_f64 * 1000_f64).abs() < f64::EPSILON);
     }
 }
