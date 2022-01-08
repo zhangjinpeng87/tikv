@@ -485,10 +485,16 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
         let sched = self.clone();
 
         // limit the write flow by tenant
-        let tenant_delay = self.inner.tenant_quota_limiter.as_ref().consume_write(
-            task.cmd.ctx().get_tenant_id(),
-            task.cmd.write_bytes() as u64,
-        );
+        let tenant_id = task.cmd.ctx().get_tenant_id();
+        let tenant_writing_bytes = task.cmd.write_bytes() as u64;
+        let tenant_delay = self
+            .inner
+            .tenant_quota_limiter
+            .as_ref()
+            .consume_write(tenant_id, tenant_writing_bytes);
+        SCHED_TENANT_WRITING_BYTES_COUNTER
+            .with_label_values(&[&format!("{}", tenant_id)])
+            .inc_by(tenant_writing_bytes);
 
         self.get_sched_pool(task.cmd.priority())
             .pool
