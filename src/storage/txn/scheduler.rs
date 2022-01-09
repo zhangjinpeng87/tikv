@@ -492,9 +492,12 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             1_u64,
             tenant_writing_bytes,
         );
-        SCHED_TENANT_WRITING_BYTES_COUNTER
+        SCHED_TENANT_WRITING_BYTES_VEC
             .with_label_values(&[&format!("{}", tenant_id)])
-            .inc_by(tenant_writing_bytes);
+            .observe(tenant_writing_bytes as f64);
+        SCHED_TENANT_REQUEST_VEC
+            .with_label_values(&[&format!("{}", tenant_id)])
+            .observe(1_f64);
 
         self.get_sched_pool(task.cmd.priority())
             .pool
