@@ -487,11 +487,11 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
         // limit the write flow by tenant
         let tenant_id = task.cmd.ctx().get_tenant_id();
         let tenant_writing_bytes = task.cmd.write_bytes() as u64;
-        let tenant_delay = self
-            .inner
-            .tenant_quota_limiter
-            .as_ref()
-            .consume_write(tenant_id, tenant_writing_bytes);
+        let tenant_delay = self.inner.tenant_quota_limiter.as_ref().consume_write_vcpu(
+            tenant_id,
+            1_u64,
+            tenant_writing_bytes,
+        );
         SCHED_TENANT_WRITING_BYTES_COUNTER
             .with_label_values(&[&format!("{}", tenant_id)])
             .inc_by(tenant_writing_bytes);

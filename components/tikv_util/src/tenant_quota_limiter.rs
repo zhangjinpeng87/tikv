@@ -10,19 +10,34 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-pub struct ReadQuotaLimiter(Limiter);
+pub fn adjust_kv_req_cost(cost_time: Duration) -> Duration {
+    cost_time + Duration::from_micros(100)
+}
+
+pub struct ReadQuotaLimiter {
+    limiter: Limiter,
+    control_mutex: Arc<tokio::sync::Mutex<bool>>,
+}
 pub struct WriteQuotaLimiter(Limiter);
 
 impl ReadQuotaLimiter {
     // millicpu same as the k8s
     pub fn new(milli_cpu: u32) -> Self {
-        Self(Limiter::new(milli_cpu as f64 * 1000_f64))
+        Self {
+            limiter: Limiter::new(milli_cpu as f64 * 1000_f64),
+            control_mutex: Arc::new(tokio::sync::Mutex::new(false)),
+        }
+    }
+
+    pub fn get_mutex(&self) -> Arc<tokio::sync::Mutex<bool>> {
+        self.control_mutex.clone()
     }
 
     // Consume read cpu quota
     // If the quota is not enough, the returned duration will > 0, or return Duration::ZERO
     pub fn consume_read(&self, time_slice_micro_secs: u32) -> Duration {
-        self.0.consume_duration(time_slice_micro_secs as usize)
+        self.limiter
+            .consume_duration(time_slice_micro_secs as usize)
     }
 }
 
@@ -35,6 +50,11 @@ impl WriteQuotaLimiter {
     // If the quota is not enough, the returned duration will > 0, or return Duration::ZERO
     pub fn consume_write(&self, write_bytes: u64) -> Duration {
         self.0.consume_duration(write_bytes as usize)
+    }
+
+    pub fn consume_write_vcpu(&self, req_cnt: u64, write_bytes: u64) -> Duration {
+        let cost_micro_cpu = 200 * req_cnt + write_bytes / 3;
+        self.0.consume_duration(cost_micro_cpu as usize)
     }
 }
 
@@ -79,6 +99,13 @@ impl TenantQuotaLimiter {
     pub fn consume_write(&self, tenant_id: u32, write_bytes: u64) -> Duration {
         if let Some(limiter) = self.tenant_write_limiters.read().unwrap().get(&tenant_id) {
             return limiter.as_ref().consume_write(write_bytes);
+        }
+        Duration::ZERO
+    }
+
+    pub fn consume_write_vcpu(&self, tenant_id: u32, req_cnt: u64, write_bytes: u64) -> Duration {
+        if let Some(limiter) = self.tenant_write_limiters.read().unwrap().get(&tenant_id) {
+            return limiter.as_ref().consume_write_vcpu(req_cnt, write_bytes);
         }
         Duration::ZERO
     }
@@ -131,7 +158,7 @@ impl TenantQuotaLimiter {
 
                 for (tenant_id, rlimiter) in rlimiters.iter() {
                     if let Some(quota) = read_quotas.remove(tenant_id) {
-                        if rlimiter.0.speed_limit() as u64 != quota as u64 * 1000 {
+                        if rlimiter.limiter.speed_limit() as u64 != quota as u64 * 1000 {
                             read_quota_updates.push((*tenant_id, quota))
                         }
                     } else {
@@ -164,9 +191,9 @@ impl TenantQuotaLimiter {
                         .entry(tenant_id)
                         .or_insert_with(|| Arc::new(ReadQuotaLimiter::new(quota)));
                     if quota == 0 {
-                        (*limiter).0.set_speed_limit(f64::INFINITY);
+                        (*limiter).limiter.set_speed_limit(f64::INFINITY);
                     } else {
-                        (*limiter).0.set_speed_limit(quota as f64 * 1000_f64);
+                        (*limiter).limiter.set_speed_limit(quota as f64 * 1000_f64);
                     }
                 }
             }
@@ -189,12 +216,12 @@ mod tests {
         let wlimiter1 = quota_limiter.get_write_quota_limiter(1).unwrap();
         assert!((wlimiter1.0.speed_limit() - 100_f64).abs() < f64::EPSILON);
         let rlimiter1 = quota_limiter.get_read_quota_limiter(1).unwrap();
-        assert!((rlimiter1.0.speed_limit() - 200_f64 * 1000_f64).abs() < f64::EPSILON);
+        assert!((rlimiter1.limiter.speed_limit() - 200_f64 * 1000_f64).abs() < f64::EPSILON);
 
         let wlimiter2 = quota_limiter.get_write_quota_limiter(2).unwrap();
         assert!((wlimiter2.0.speed_limit() - 300_f64).abs() < f64::EPSILON);
         let rlimiter2 = quota_limiter.get_read_quota_limiter(2).unwrap();
-        assert!((rlimiter2.0.speed_limit() - 400_f64 * 1000_f64).abs() < f64::EPSILON);
+        assert!((rlimiter2.limiter.speed_limit() - 400_f64 * 1000_f64).abs() < f64::EPSILON);
 
         assert!(quota_limiter.get_write_quota_limiter(3).is_none());
         assert!(quota_limiter.get_read_quota_limiter(3).is_none());
@@ -205,16 +232,30 @@ mod tests {
         let wlimiter1 = quota_limiter.get_write_quota_limiter(1).unwrap();
         assert!(wlimiter1.0.speed_limit().is_infinite());
         let rlimiter1 = quota_limiter.get_read_quota_limiter(1).unwrap();
-        assert!(rlimiter1.0.speed_limit().is_infinite());
+        assert!(rlimiter1.limiter.speed_limit().is_infinite());
 
         let wlimiter2 = quota_limiter.get_write_quota_limiter(2).unwrap();
         assert!((wlimiter2.0.speed_limit() - 100_f64).abs() < f64::EPSILON);
         let rlimiter2 = quota_limiter.get_read_quota_limiter(2).unwrap();
-        assert!((rlimiter2.0.speed_limit() - 200_f64 * 1000_f64).abs() < f64::EPSILON);
+        assert!((rlimiter2.limiter.speed_limit() - 200_f64 * 1000_f64).abs() < f64::EPSILON);
 
         let wlimiter3 = quota_limiter.get_write_quota_limiter(3).unwrap();
         assert!((wlimiter3.0.speed_limit() - 300_f64).abs() < f64::EPSILON);
         let rlimiter3 = quota_limiter.get_read_quota_limiter(3).unwrap();
-        assert!((rlimiter3.0.speed_limit() - 400_f64 * 1000_f64).abs() < f64::EPSILON);
+        assert!((rlimiter3.limiter.speed_limit() - 400_f64 * 1000_f64).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_consume_read() {
+        let read_limiter = ReadQuotaLimiter::new(1);
+        read_limiter.consume_read(100);
+        std::thread::sleep_ms(2000);
+        let mut total = 0;
+        for _i in 1..12 {
+            let wait = read_limiter.consume_read(100);
+            //std::thread::sleep(wait);
+            total += wait.as_micros();
+        }
+        println!("total:{}", total);
     }
 }
