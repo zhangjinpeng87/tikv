@@ -24,6 +24,7 @@ make_auto_flush_static_metric! {
         transfer_leader,
         conf_change,
         batch,
+        dropped_read_index,
     }
 
     pub label_enum AdminCmdType {
@@ -36,6 +37,7 @@ make_auto_flush_static_metric! {
         commit_merge,
         rollback_merge,
         compact,
+        transfer_leader
     }
 
     pub label_enum AdminCmdStatus {
@@ -475,6 +477,11 @@ lazy_static! {
             "tikv_raftstore_gc_raft_log_total",
             "Total number of GC raft log."
         ).unwrap();
+
+    pub static ref STORE_BATCH_WRITE_TO_DB_BYTES_HISTOGRAM: Histogram = register_histogram!(
+        "tikv_store_batch_write_to_db_bytes",
+        "Total number of writing bytes by apply fsm write_to_db.",
+    ).unwrap();
 
     pub static ref UPDATE_REGION_SIZE_BY_COMPACTION_COUNTER: IntCounter =
         register_int_counter!(

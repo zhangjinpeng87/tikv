@@ -275,6 +275,9 @@ pub enum ExecResult<S> {
     IngestSst {
         ssts: Vec<SSTMetaInfo>,
     },
+    TransferLeader {
+        term: u64,
+    },
 }
 
 /// The possible returned value when applying logs.
@@ -520,6 +523,7 @@ where
             self.perf_context.report_metrics();
             self.sync_log_hint = false;
             let data_size = self.kv_wb().data_size();
+            STORE_BATCH_WRITE_TO_DB_BYTES_HISTOGRAM.observe(data_size as f64);
             if data_size > APPLY_WB_SHRINK_SIZE {
                 // Control the memory usage for the WriteBatch. Whether it's `RocksWriteBatch` or
                 // `RocksWriteBatchVec` depends on the `enable_multi_batch_write` configuration.
@@ -1270,7 +1274,8 @@ where
                 | ExecResult::VerifyHash { .. }
                 | ExecResult::CompactLog { .. }
                 | ExecResult::DeleteRange { .. }
-                | ExecResult::IngestSst { .. } => {}
+                | ExecResult::IngestSst { .. }
+                | ExecResult::TransferLeader { .. } => {}
                 ExecResult::SplitRegion { ref derived, .. } => {
                     self.region = derived.clone();
                     self.metrics.size_diff_hint = 0;
@@ -1396,7 +1401,7 @@ where
             AdminCmdType::Split => self.exec_split(ctx, request),
             AdminCmdType::BatchSplit => self.exec_batch_split(ctx, request),
             AdminCmdType::CompactLog => self.exec_compact_log(request),
-            AdminCmdType::TransferLeader => Err(box_err!("transfer leader won't exec")),
+            AdminCmdType::TransferLeader => self.exec_transfer_leader(request, ctx.exec_log_term),
             AdminCmdType::ComputeHash => self.exec_compute_hash(ctx, request),
             AdminCmdType::VerifyHash => self.exec_verify_hash(ctx, request),
             // TODO: is it backward compatible to add new cmd_type?
@@ -2693,6 +2698,23 @@ where
                 first_index,
             }),
         ))
+    }
+
+    fn exec_transfer_leader(
+        &mut self,
+        req: &AdminRequest,
+        term: u64,
+    ) -> Result<(AdminResponse, ApplyResult<EK::Snapshot>)> {
+        PEER_ADMIN_CMD_COUNTER.transfer_leader.all.inc();
+        let resp = AdminResponse::default();
+
+        let peer = req.get_transfer_leader().get_peer();
+        // Only execute TransferLeader if the expected new leader is self.
+        if peer.get_id() == self.id {
+            Ok((resp, ApplyResult::Res(ExecResult::TransferLeader { term })))
+        } else {
+            Ok((resp, ApplyResult::None))
+        }
     }
 
     fn exec_compute_hash<W: WriteBatch<EK>>(

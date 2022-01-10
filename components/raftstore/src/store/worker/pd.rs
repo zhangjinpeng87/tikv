@@ -1107,9 +1107,7 @@ where
                             )
                         })
                         .collect();
-                    if !tenant_quota.is_empty() {
-                        tenant_quota_limiter.as_ref().refresh_quota(tenant_quota);
-                    }
+                    tenant_quota_limiter.as_ref().refresh_quota(tenant_quota);
 
                     if resp.get_require_detailed_report() {
                         info!("required to send detailed report in the next heartbeat");

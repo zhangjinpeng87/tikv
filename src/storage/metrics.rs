@@ -426,6 +426,18 @@ lazy_static! {
         "Total number of writing kv."
     )
     .unwrap();
+    pub static ref SCHED_TENANT_REQUEST_VEC: HistogramVec = register_histogram_vec!(
+        "tikv_scheduler_tenant_request",
+        "Total number of requests that scheduler allowed by tenant.",
+        &["tenant"],
+    )
+    .unwrap();
+    pub static ref SCHED_TENANT_WRITING_BYTES_VEC: HistogramVec = register_histogram_vec!(
+        "tikv_scheduler_tenant_writing_bytes",
+        "Total number of writing bytes that scheduler allowed by tenant.",
+        &["tenant"],
+    )
+    .unwrap();
     pub static ref SCHED_CONTEX_GAUGE: IntGauge = register_int_gauge!(
         "tikv_scheduler_contex_total",
         "Total number of pending commands."
