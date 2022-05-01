@@ -1,37 +1,39 @@
-// Copyright 2016 PingCAP, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::boxed::FnBox;
-use kvproto::coprocessor::Response;
-mod metrics;
-mod service;
+pub(crate) mod metrics;
 mod raft_client;
 
 pub mod config;
-pub mod errors;
-pub mod server;
-pub mod transport;
-pub mod node;
-pub mod resolve;
-pub mod snap;
 pub mod debug;
+mod engine_factory;
+pub mod errors;
+pub mod gc_worker;
+pub mod load_statistics;
+pub mod lock_manager;
+pub mod node;
+mod proxy;
+pub mod raftkv;
+mod reset_to_version;
+pub mod resolve;
+pub mod server;
+pub mod service;
+pub mod snap;
+pub mod status_server;
+pub mod transport;
+pub mod ttl;
 
-pub use self::config::{Config, DEFAULT_CLUSTER_ID, DEFAULT_LISTENING_ADDR};
+pub use self::config::{Config, ServerConfigManager, DEFAULT_CLUSTER_ID, DEFAULT_LISTENING_ADDR};
 pub use self::errors::{Error, Result};
-pub use self::server::Server;
-pub use self::transport::{ServerRaftStoreRouter, ServerTransport};
+pub use self::metrics::CONFIG_ROCKSDB_GAUGE;
+pub use self::metrics::{CPU_CORES_QUOTA_GAUGE, MEM_TRACE_SUM_GAUGE};
 pub use self::node::{create_raft_storage, Node};
+pub use self::proxy::{build_forward_option, get_target_address, Proxy};
+pub use self::raft_client::{ConnectionBuilder, RaftClient};
+pub use self::raftkv::RaftKv;
 pub use self::resolve::{PdStoreAddrResolver, StoreAddrResolver};
-pub use self::raft_client::RaftClient;
+pub use self::server::{Server, GRPC_THREAD_PREFIX};
+pub use self::transport::ServerTransport;
+pub use engine_factory::{KvEngineFactory, KvEngineFactoryBuilder};
 
-pub type OnResponse = Box<FnBox(Response) + Send>;
+#[cfg(any(test, feature = "testexport"))]
+pub use self::server::test_router::TestRaftStoreRouter;

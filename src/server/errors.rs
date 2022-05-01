@@ -1,116 +1,77 @@
-// Copyright 2016 PingCAP, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::error;
-use std::result;
+use std::error::Error as StdError;
 use std::io::Error as IoError;
 use std::net::AddrParseError;
+use std::result;
 
-use futures::Canceled;
+use futures::channel::oneshot::Canceled;
+use grpcio::Error as GrpcError;
+use hyper::Error as HttpError;
+use openssl::error::ErrorStack as OpenSSLError;
 use protobuf::ProtobufError;
-use grpc::Error as GrpcError;
+use thiserror::Error;
 
-use util::codec::Error as CodecError;
-use util::worker::Stopped;
+use engine_traits::Error as EngineTraitError;
+use pd_client::Error as PdError;
 use raftstore::Error as RaftServerError;
-use storage::engine::Error as EngineError;
-use storage::Error as StorageError;
-use pd::Error as PdError;
+use tikv_util::codec::Error as CodecError;
+use tikv_util::worker::ScheduleError;
+
 use super::snap::Task as SnapTask;
-use coprocessor::EndPointTask;
+use crate::storage::kv::Error as EngineError;
+use crate::storage::Error as StorageError;
 
-quick_error!{
-    #[derive(Debug)]
-    pub enum Error {
-        Other(err: Box<error::Error + Sync + Send>) {
-            from()
-            cause(err.as_ref())
-            description(err.description())
-            display("{:?}", err)
-        }
-        // Following is for From other errors.
-        Io(err: IoError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        Protobuf(err: ProtobufError) {
-            from()
-            cause(err)
-            description(err.description())
-        }
-        Grpc(err: GrpcError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        Codec(err: CodecError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        AddrParse(err: AddrParseError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        RaftServer(err: RaftServerError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        Engine(err: EngineError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        Storage(err: StorageError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        Pd(err: PdError) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-        SnapWorkerStopped(err: Stopped<SnapTask>) {
-            from()
-            display("{:?}", err)
-        }
-        EndPointStopped(err: Stopped<EndPointTask>) {
-            from()
-            display("{:?}", err)
-        }
-        Sink {
-            description("failed to poll from mpsc receiver")
-        }
-        Canceled(err: Canceled) {
-            from()
-            cause(err)
-            display("{:?}", err)
-            description(err.description())
-        }
-    }
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("{0:?}")]
+    Other(#[from] Box<dyn StdError + Sync + Send>),
+
+    // Following is for From other errors.
+    #[error("{0:?}")]
+    Io(#[from] IoError),
+
+    #[error("{0}")]
+    Protobuf(#[from] ProtobufError),
+
+    #[error("{0:?}")]
+    Grpc(#[from] GrpcError),
+
+    #[error("{0:?}")]
+    Codec(#[from] CodecError),
+
+    #[error("{0:?}")]
+    AddrParse(#[from] AddrParseError),
+
+    #[error("{0:?}")]
+    RaftServer(#[from] RaftServerError),
+
+    #[error("{0:?}")]
+    Engine(#[from] EngineError),
+
+    #[error("{0:?}")]
+    EngineTrait(#[from] EngineTraitError),
+
+    #[error("{0:?}")]
+    Storage(#[from] StorageError),
+
+    #[error("{0:?}")]
+    Pd(#[from] PdError),
+
+    #[error("{0:?}")]
+    SnapWorkerStopped(#[from] ScheduleError<SnapTask>),
+
+    #[error("failed to poll from mpsc receiver")]
+    Sink,
+
+    #[error("{0:?}")]
+    RecvError(#[from] Canceled),
+
+    #[error("{0:?}")]
+    Http(#[from] HttpError),
+
+    #[error("{0:?}")]
+    OpenSSL(#[from] OpenSSLError),
 }
-
 
 pub type Result<T> = result::Result<T, Error>;

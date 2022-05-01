@@ -1,53 +1,38 @@
-// Copyright 2017 PingCAP, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
-use byteorder::{ByteOrder, LittleEndian};
-use protobuf::RepeatedField;
 use murmur3::murmur3_x64_128;
-use tipb::analyze;
 
-/// `CMSketch` is used to estimate point queries.
+/// `CmSketch` is used to estimate point queries.
 /// Refer:[Count-Min Sketch](https://en.wikipedia.org/wiki/Count-min_sketch)
 #[derive(Clone)]
-pub struct CMSketch {
+pub struct CmSketch {
+    #[allow(dead_code)]
     depth: usize,
     width: usize,
     count: u32,
     table: Vec<Vec<u32>>,
+    top_n: Vec<(Vec<u8>, u64)>,
 }
 
-impl CMSketch {
-    pub fn new(d: usize, w: usize) -> Option<CMSketch> {
+impl CmSketch {
+    pub fn new(d: usize, w: usize) -> Option<CmSketch> {
         if d == 0 || w == 0 {
             None
         } else {
-            Some(CMSketch {
+            Some(CmSketch {
                 depth: d,
                 width: w,
                 count: 0,
                 table: vec![vec![0; w]; d],
+                top_n: vec![],
             })
         }
     }
 
     // `hash` hashes the data into two u64 using murmur hash.
     fn hash(mut bytes: &[u8]) -> (u64, u64) {
-        let mut out: [u8; 16] = [0; 16];
-        murmur3_x64_128(&mut bytes, 0, &mut out);
-        (
-            LittleEndian::read_u64(&out[0..8]),
-            LittleEndian::read_u64(&out[8..16]),
-        )
+        let out = murmur3_x64_128(&mut bytes, 0).unwrap();
+        (out as u64, (out >> 64) as u64)
     }
 
     // `insert` inserts the data into cm sketch. For each row i, the position at
@@ -55,38 +40,73 @@ impl CMSketch {
     // of data.
     pub fn insert(&mut self, bytes: &[u8]) {
         self.count = self.count.wrapping_add(1);
-        let (h1, h2) = CMSketch::hash(bytes);
+        let (h1, h2) = CmSketch::hash(bytes);
         for (i, row) in self.table.iter_mut().enumerate() {
             let j = (h1.wrapping_add(h2.wrapping_mul(i as u64)) % self.width as u64) as usize;
             row[j] = row[j].saturating_add(1);
         }
     }
 
-    pub fn into_proto(self) -> analyze::CMSketch {
-        let mut proto = analyze::CMSketch::new();
-        let mut rows = vec![analyze::CMSketchRow::default(); self.depth];
-        for (i, row) in self.table.iter().enumerate() {
-            rows[i].set_counters(row.to_vec());
+    pub fn sub(&mut self, bytes: &[u8], cnt: u32) {
+        self.count -= cnt;
+        let (h1, h2) = CmSketch::hash(bytes);
+        for (i, row) in self.table.iter_mut().enumerate() {
+            let j = (h1.wrapping_add(h2.wrapping_mul(i as u64)) % self.width as u64) as usize;
+            row[j] = row[j].saturating_sub(cnt);
         }
-        proto.set_rows(RepeatedField::from_vec(rows));
+    }
+
+    pub fn push_to_top_n(&mut self, b: Vec<u8>, cnt: u64) {
+        self.top_n.push((b, cnt))
+    }
+
+    pub fn into_proto(self) -> tipb::CmSketch {
+        let mut proto = tipb::CmSketch::default();
+        let rows = self
+            .table
+            .into_iter()
+            .map(|row| {
+                let mut pb_row = tipb::CmSketchRow::default();
+                pb_row.set_counters(row);
+                pb_row
+            })
+            .collect();
+        proto.set_rows(rows);
+        let top_n_data = self
+            .top_n
+            .into_iter()
+            .map(|(item, cnt)| {
+                let mut pb_top_n_item = tipb::CmSketchTopN::default();
+                pb_top_n_item.set_data(item);
+                pb_top_n_item.set_count(cnt);
+                pb_top_n_item
+            })
+            .collect();
+        proto.set_top_n(top_n_data);
         proto
     }
 }
 
 #[cfg(test)]
-mod test {
-    use std::collections::HashMap;
-    use std::cmp::min;
-    use rand::{Rng, SeedableRng, StdRng};
-    use zipf::ZipfDistribution;
-    use coprocessor::codec::datum;
-    use coprocessor::codec::datum::Datum;
-    use util::as_slice;
+mod tests {
     use super::*;
 
-    impl CMSketch {
+    use std::cmp::min;
+    use std::slice::from_ref;
+
+    use rand::distributions::Distribution;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+    use zipf::ZipfDistribution;
+
+    use collections::HashMap;
+    use tidb_query_datatype::codec::datum;
+    use tidb_query_datatype::codec::datum::Datum;
+    use tidb_query_datatype::expr::EvalContext;
+
+    impl CmSketch {
         fn query(&self, bytes: &[u8]) -> u32 {
-            let (h1, h2) = CMSketch::hash(bytes);
+            let (h1, h2) = CmSketch::hash(bytes);
             let mut vals = vec![0u32; self.depth];
             let mut min_counter = u32::max_value();
             for (i, row) in self.table.iter().enumerate() {
@@ -95,11 +115,11 @@ mod test {
                 vals[i] = row[j].saturating_sub(noise);
                 min_counter = min(min_counter, row[j])
             }
-            vals.sort();
+            vals.sort_unstable();
             min(
                 min_counter,
-                vals[(self.depth - 1) / 2] +
-                    (vals[self.depth / 2] - vals[(self.depth - 1) / 2]) / 2,
+                vals[(self.depth - 1) / 2]
+                    + (vals[self.depth / 2] - vals[(self.depth - 1) / 2]) / 2,
             )
         }
 
@@ -109,38 +129,52 @@ mod test {
     }
 
     fn average_error(depth: usize, width: usize, total: u32, max_value: usize, s: f64) -> u64 {
-        let mut c = CMSketch::new(depth, width).unwrap();
-        let mut map: HashMap<u64, u32> = HashMap::new();
-        let seed: &[_] = &[1, 2, 3, 4];
-        let mut gen: ZipfDistribution<StdRng> =
-            ZipfDistribution::new(SeedableRng::from_seed(seed), max_value, s).unwrap();
+        let mut c = CmSketch::new(depth, width).unwrap();
+        let mut map: HashMap<u64, u32> = HashMap::default();
+        let gen = ZipfDistribution::new(max_value, s).unwrap();
+        let mut rng = StdRng::seed_from_u64(0x01020304);
         for _ in 0..total {
-            let val = gen.next_u64();
-            let bytes = datum::encode_value(as_slice(&Datum::U64(val))).unwrap();
+            let val = gen.sample(&mut rng) as u64;
+            let bytes =
+                datum::encode_value(&mut EvalContext::default(), from_ref(&Datum::U64(val)))
+                    .unwrap();
             c.insert(&bytes);
             let counter = map.entry(val).or_insert(0);
             *counter += 1;
         }
         let mut total = 0u64;
         for (val, num) in &map {
-            let bytes = datum::encode_value(as_slice(&Datum::U64(*val))).unwrap();
+            let bytes =
+                datum::encode_value(&mut EvalContext::default(), from_ref(&Datum::U64(*val)))
+                    .unwrap();
             let estimate = c.query(&bytes);
             let err = if *num > estimate {
                 *num - estimate
             } else {
                 estimate - *num
             };
-            total += err as u64
+            total += u64::from(err)
         }
         total / map.len() as u64
     }
 
     #[test]
+    fn test_hash() {
+        let hash_result = CmSketch::hash("€".as_bytes());
+        assert_eq!(hash_result.0, 0x59E3303A2FDD9555);
+        assert_eq!(hash_result.1, 0x4F9D8BB3E4BC3164);
+
+        let hash_result = CmSketch::hash("€€€€€€€€€€".as_bytes());
+        assert_eq!(hash_result.0, 0xCECFEB77375EEF6F);
+        assert_eq!(hash_result.1, 0xE9830BC26869E2C6);
+    }
+
+    #[test]
     fn test_cm_sketch() {
         let (depth, width) = (8, 2048);
-        let (total, max_value) = (1000000, 10000000);
-        assert_eq!(average_error(depth, width, total, max_value, 1.1), 3);
-        assert_eq!(average_error(depth, width, total, max_value, 2.0), 24);
-        assert_eq!(average_error(depth, width, total, max_value, 3.0), 64);
+        let (total, max_value) = (10000, 10000000);
+        assert_eq!(average_error(depth, width, total, max_value, 1.1), 1);
+        assert_eq!(average_error(depth, width, total, max_value, 2.0), 2);
+        assert_eq!(average_error(depth, width, total, max_value, 3.0), 2);
     }
 }
