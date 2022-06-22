@@ -7,18 +7,11 @@
 //! The `Worker` is responsible for persisting `WriteTask` to kv db or
 //! raft db and then invoking callback or sending msgs if any.
 
-use std::fmt;
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-
-use crate::store::config::Config;
-use crate::store::fsm::RaftRouter;
-use crate::store::local_metrics::{RaftSendMessageMetrics, StoreWriteMetrics};
-use crate::store::metrics::*;
-use crate::store::transport::Transport;
-use crate::store::util::LatencyInspector;
-use crate::store::PeerMsg;
-use crate::Result;
+use std::{
+    fmt,
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
 
 use collections::HashMap;
 use crossbeam::channel::{bounded, Receiver, Sender, TryRecvError};
@@ -31,9 +24,28 @@ use fail::fail_point;
 use kvproto::raft_serverpb::{RaftLocalState, RaftMessage};
 use protobuf::Message;
 use raft::eraftpb::Entry;
-use tikv_util::config::{Tracker, VersionTrack};
-use tikv_util::time::{duration_to_sec, Instant};
-use tikv_util::{box_err, debug, info, slow_log, thd_name, warn};
+use tikv_util::{
+    box_err,
+    config::{Tracker, VersionTrack},
+    debug, info, slow_log,
+    sys::thread::StdThreadBuildWrapper,
+    thd_name,
+    time::{duration_to_sec, Instant},
+    warn,
+};
+
+use crate::{
+    store::{
+        config::Config,
+        fsm::RaftRouter,
+        local_metrics::{RaftSendMessageMetrics, StoreWriteMetrics},
+        metrics::*,
+        transport::Transport,
+        util::LatencyInspector,
+        PeerMsg,
+    },
+    Result,
+};
 
 const KV_WB_SHRINK_SIZE: usize = 1024 * 1024;
 const KV_WB_DEFAULT_SIZE: usize = 16 * 1024;
@@ -214,10 +226,10 @@ where
             panic!("task is not valid: {:?}", e);
         }
         if let Some(kv_wb) = task.kv_wb.take() {
-            self.kv_wb.merge(kv_wb);
+            self.kv_wb.merge(kv_wb).unwrap();
         }
         if let Some(raft_wb) = task.raft_wb.take() {
-            self.raft_wb.merge(raft_wb);
+            self.raft_wb.merge(raft_wb).unwrap();
         }
 
         let entries = std::mem::take(&mut task.entries);
@@ -505,10 +517,7 @@ where
 
         let mut write_raft_time = 0f64;
         if !self.batch.raft_wb.is_empty() {
-            let raft_before_save_on_store_1 = || {
-                fail_point!("raft_before_save_on_store_1", self.store_id == 1, |_| {});
-            };
-            raft_before_save_on_store_1();
+            fail_point!("raft_before_save_on_store_1", self.store_id == 1, |_| {});
 
             let now = Instant::now();
             self.perf_context.start_observe();
@@ -526,7 +535,7 @@ where
                         self.store_id, self.tag, e
                     );
                 });
-            self.perf_context.report_metrics();
+            self.perf_context.report_metrics(&[]); // TODO: pass in request trackers
             write_raft_time = duration_to_sec(now.saturating_elapsed());
             STORE_WRITE_RAFTDB_DURATION_HISTOGRAM.observe(write_raft_time);
         }
@@ -685,9 +694,11 @@ where
                 cfg,
             );
             info!("starting store writer {}", i);
-            let t = thread::Builder::new().name(thd_name!(tag)).spawn(move || {
-                worker.run();
-            })?;
+            let t = thread::Builder::new()
+                .name(thd_name!(tag))
+                .spawn_wrapper(move || {
+                    worker.run();
+                })?;
             self.writers.push(tx);
             self.handlers.push(t);
         }

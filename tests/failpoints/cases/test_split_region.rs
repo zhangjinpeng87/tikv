@@ -1,29 +1,35 @@
 // Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-
-use engine_traits::CF_WRITE;
-use grpcio::{ChannelBuilder, Environment};
-use kvproto::kvrpcpb::{Mutation, Op, PessimisticLockRequest, PrewriteRequest};
-use kvproto::metapb::Region;
-use kvproto::raft_serverpb::RaftMessage;
-use kvproto::tikvpb::TikvClient;
-use pd_client::PdClient;
-use raft::eraftpb::MessageType;
-use raftstore::store::config::Config as RaftstoreConfig;
-use raftstore::store::util::is_vote_msg;
-use raftstore::store::Callback;
-use raftstore::Result;
-use tikv_util::HandyRwLock;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
+    thread,
+    time::Duration,
+};
 
 use collections::HashMap;
+use engine_traits::CF_WRITE;
+use grpcio::{ChannelBuilder, Environment};
+use kvproto::{
+    kvrpcpb::{Mutation, Op, PessimisticLockRequest, PrewriteRequest},
+    metapb::Region,
+    raft_serverpb::RaftMessage,
+    tikvpb::TikvClient,
+};
+use pd_client::PdClient;
+use raft::eraftpb::MessageType;
+use raftstore::{
+    store::{config::Config as RaftstoreConfig, util::is_vote_msg, Callback},
+    Result,
+};
 use test_raftstore::*;
-use tikv::storage::kv::SnapshotExt;
-use tikv::storage::Snapshot;
-use tikv_util::config::{ReadableDuration, ReadableSize};
+use tikv::storage::{kv::SnapshotExt, Snapshot};
+use tikv_util::{
+    config::{ReadableDuration, ReadableSize},
+    HandyRwLock,
+};
 use txn_types::{Key, PessimisticLock};
 
 #[test]
@@ -166,7 +172,7 @@ fn gen_split_region() -> (Region, Region, Region) {
     let region_max_size = 50000;
     let region_split_size = 30000;
     cluster.cfg.raft_store.split_region_check_tick_interval = ReadableDuration::millis(20);
-    cluster.cfg.coprocessor.region_max_size = ReadableSize(region_max_size);
+    cluster.cfg.coprocessor.region_max_size = Some(ReadableSize(region_max_size));
     cluster.cfg.coprocessor.region_split_size = ReadableSize(region_split_size);
 
     let mut range = 1..;
@@ -766,7 +772,7 @@ fn test_report_approximate_size_after_split_check() {
     cluster.cfg.raft_store = RaftstoreConfig::default();
     cluster.cfg.raft_store.pd_heartbeat_tick_interval = ReadableDuration::millis(100);
     cluster.cfg.raft_store.split_region_check_tick_interval = ReadableDuration::millis(100);
-    cluster.cfg.raft_store.region_split_check_diff = ReadableSize::kb(64);
+    cluster.cfg.raft_store.region_split_check_diff = Some(ReadableSize::kb(64));
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(50);
     cluster.cfg.raft_store.raft_store_max_leader_lease = ReadableDuration::millis(300);
     cluster.run();
@@ -977,4 +983,74 @@ fn test_split_pessimistic_locks_with_concurrent_prewrite() {
     fail::remove("txn_before_process_write");
     let resp = resp.join().unwrap();
     assert!(resp.get_region_error().has_epoch_not_match(), "{:?}", resp);
+}
+
+/// Logs are gced asynchronously. If an uninitialized peer is destroyed before being replaced by
+/// split, then the asynchronous log gc response may arrive after the peer is replaced, hence
+/// it will lead to incorrect memory state. Actually, there is nothing to be gc for uninitialized
+/// peer. The case is to guarantee such incorrect state will not happen.
+#[test]
+fn test_split_replace_skip_log_gc() {
+    let mut cluster = new_node_cluster(0, 3);
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(15);
+    cluster.cfg.raft_store.raft_log_gc_threshold = 15;
+    cluster.cfg.raft_store.right_derive_when_split = true;
+    cluster.cfg.raft_store.store_batch_system.max_batch_size = Some(1);
+    cluster.cfg.raft_store.store_batch_system.pool_size = 2;
+    let pd_client = cluster.pd_client.clone();
+
+    // Disable default max peer number check.
+    pd_client.disable_default_operator();
+    let r = cluster.run_conf_change();
+    pd_client.must_add_peer(r, new_peer(3, 3));
+    cluster.must_put(b"k1", b"v1");
+    must_get_equal(&cluster.get_engine(3), b"k1", b"v1");
+
+    let before_check_snapshot_1_2_fp = "before_check_snapshot_1_2";
+    fail::cfg(before_check_snapshot_1_2_fp, "pause").unwrap();
+
+    // So the split peer on store 2 always uninitialized.
+    let filter = RegionPacketFilter::new(1000, 2).msg_type(MessageType::MsgSnapshot);
+    cluster.add_send_filter(CloneFilterFactory(filter));
+
+    pd_client.must_add_peer(r, new_peer(2, 2));
+    let region = pd_client.get_region(b"k1").unwrap();
+    // [-∞, k2), [k2, +∞)
+    //    b         a
+    cluster.must_split(&region, b"k2");
+
+    cluster.must_put(b"k3", b"v3");
+
+    // Because a is not initialized, so b must be created using heartbeat on store 3.
+
+    // Simulate raft log gc stall.
+    let gc_fp = "worker_gc_raft_log_flush";
+    let destroy_fp = "destroy_peer_after_pending_move";
+
+    fail::cfg(gc_fp, "pause").unwrap();
+    let (tx, rx) = crossbeam::channel::bounded(0);
+    fail::cfg_callback(destroy_fp, move || {
+        let _ = tx.send(());
+        let _ = tx.send(());
+    })
+    .unwrap();
+
+    let left = pd_client.get_region(b"k1").unwrap();
+    let left_peer_on_store_2 = find_peer(&left, 2).unwrap();
+    pd_client.must_remove_peer(left.get_id(), left_peer_on_store_2.clone());
+    // Wait till destroy is triggered.
+    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Make it split.
+    fail::remove(before_check_snapshot_1_2_fp);
+    // Wait till split is finished.
+    must_get_equal(&cluster.get_engine(2), b"k3", b"v3");
+    // Wait a little bit so the uninitialized peer is replaced.
+    thread::sleep(Duration::from_millis(10));
+    // Resume destroy.
+    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Resume gc.
+    fail::remove(gc_fp);
+    // Check store 3 is still working correctly.
+    cluster.must_put(b"k4", b"v4");
+    must_get_equal(&cluster.get_engine(2), b"k4", b"v4");
 }

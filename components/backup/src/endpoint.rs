@@ -1,50 +1,55 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::borrow::Cow;
-use std::cell::RefCell;
-use std::fmt;
-use std::sync::atomic::*;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    fmt,
+    sync::{atomic::*, mpsc, Arc, Mutex, RwLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_channel::SendError;
 use concurrency_manager::ConcurrencyManager;
 use engine_rocks::raw::DB;
-use engine_traits::raw_ttl::ttl_current_ts;
-use engine_traits::{name_to_cf, CfName, SstCompressionType};
+use engine_traits::{name_to_cf, raw_ttl::ttl_current_ts, CfName, SstCompressionType};
 use external_storage::{BackendConfig, HdfsConfig};
 use external_storage_export::{create_storage, ExternalStorage};
 use futures::channel::mpsc::*;
-use kvproto::brpb::*;
-use kvproto::encryptionpb::EncryptionMethod;
-use kvproto::kvrpcpb::{ApiVersion, Context, IsolationLevel};
-use kvproto::metapb::*;
-use online_config::OnlineConfig;
-
-use raft::StateRole;
-use raftstore::coprocessor::RegionInfoProvider;
-use raftstore::store::util::find_peer;
-use tikv::config::BackupConfig;
-use tikv::storage::kv::{CursorBuilder, Engine, ScanMode, SnapContext};
-use tikv::storage::mvcc::Error as MvccError;
-use tikv::storage::raw::raw_mvcc::RawMvccSnapshot;
-use tikv::storage::txn::{
-    EntryBatch, Error as TxnError, SnapshotStore, TxnEntryScanner, TxnEntryStore,
+use kvproto::{
+    brpb::*,
+    encryptionpb::EncryptionMethod,
+    kvrpcpb::{ApiVersion, Context, IsolationLevel},
+    metapb::*,
 };
-use tikv::storage::Snapshot;
-use tikv::storage::Statistics;
-use tikv_util::time::{Instant, Limiter};
-use tikv_util::worker::Runnable;
-use tikv_util::{box_err, debug, error, error_unknown, impl_display_as_debug, info, warn};
+use online_config::OnlineConfig;
+use raft::StateRole;
+use raftstore::{coprocessor::RegionInfoProvider, store::util::find_peer};
+use tikv::{
+    config::BackupConfig,
+    storage::{
+        kv::{CursorBuilder, Engine, ScanMode, SnapContext},
+        mvcc::Error as MvccError,
+        raw::raw_mvcc::RawMvccSnapshot,
+        txn::{EntryBatch, Error as TxnError, SnapshotStore, TxnEntryScanner, TxnEntryStore},
+        Snapshot, Statistics,
+    },
+};
+use tikv_util::{
+    box_err, debug, error, error_unknown, impl_display_as_debug, info,
+    time::{Instant, Limiter},
+    warn,
+    worker::Runnable,
+};
 use tokio::runtime::Runtime;
 use txn_types::{Key, Lock, TimeStamp};
 
-use crate::metrics::*;
-use crate::softlimit::{CpuStatistics, SoftLimit, SoftLimitByCpu};
-use crate::utils::{ControlThreadPool, KeyValueCodec};
-use crate::writer::{BackupWriterBuilder, CfNameWrap};
-use crate::Error;
-use crate::*;
+use crate::{
+    metrics::*,
+    softlimit::{CpuStatistics, SoftLimit, SoftLimitByCpu},
+    utils::{ControlThreadPool, KeyValueCodec},
+    writer::{BackupWriterBuilder, CfNameWrap},
+    Error, *,
+};
 
 const BACKUP_BATCH_LIMIT: usize = 1024;
 
@@ -201,20 +206,30 @@ async fn save_backup_file_worker(
         let files = if msg.files.need_flush_keys() {
             match msg.files.save(&storage).await {
                 Ok(mut split_files) => {
+                    let mut has_err = false;
                     for file in split_files.iter_mut() {
                         // In the case that backup from v1 and restore to v2,
                         // the file range need be encoded as v2 format.
                         // And range in response keep in v1 format.
-                        let (start, end) = codec.convert_key_range_to_dst_version(
+                        let ret = codec.convert_key_range_to_dst_version(
                             msg.start_key.clone(),
                             msg.end_key.clone(),
                         );
+                        if ret.is_err() {
+                            has_err = true;
+                            break;
+                        }
+                        let (start, end) = ret.unwrap();
                         file.set_start_key(start);
                         file.set_end_key(end);
                         file.set_start_version(msg.start_version.into_inner());
                         file.set_end_version(msg.end_version.into_inner());
                     }
-                    Ok(split_files)
+                    if has_err {
+                        Err(box_err!("backup convert key range failed"))
+                    } else {
+                        Ok(split_files)
+                    }
                 }
                 Err(e) => {
                     error_unknown!(?e; "backup save file failed");
@@ -1094,27 +1109,32 @@ fn redact_option_key(key: &Option<Key>) -> log_wrappers::Value<'_> {
 
 #[cfg(test)]
 pub mod tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::Duration;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Mutex,
+        time::Duration,
+    };
 
     use api_version::{api_v2::RAW_KEY_PREFIX, dispatch_api_version, KvFormat, RawValue};
     use engine_traits::MiscExt;
     use external_storage_export::{make_local_backend, make_noop_backend};
     use file_system::{IOOp, IORateLimiter, IOType};
-    use futures::executor::block_on;
-    use futures::stream::StreamExt;
+    use futures::{executor::block_on, stream::StreamExt};
     use kvproto::metapb;
-    use raftstore::coprocessor::RegionCollector;
-    use raftstore::coprocessor::Result as CopResult;
-    use raftstore::coprocessor::SeekRegionCallback;
-    use raftstore::store::util::new_peer;
+    use raftstore::{
+        coprocessor::{RegionCollector, Result as CopResult, SeekRegionCallback},
+        store::util::new_peer,
+    };
     use rand::Rng;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-    use tikv::coprocessor::checksum_crc64_xor;
-    use tikv::storage::txn::tests::{must_commit, must_prewrite_put};
-    use tikv::storage::{RocksEngine, TestEngineBuilder};
+    use tikv::{
+        coprocessor::checksum_crc64_xor,
+        storage::{
+            txn::tests::{must_commit, must_prewrite_put},
+            RocksEngine, TestEngineBuilder,
+        },
+    };
     use tikv_util::config::ReadableSize;
     use tokio::time;
     use txn_types::SHORT_VALUE_MAX_LEN;
@@ -1514,7 +1534,10 @@ pub mod tests {
             format!("k{:0>10}", idx)
         };
         if api_ver == ApiVersion::V2 {
-            key.insert(0, RAW_KEY_PREFIX as char);
+            // [0, 0, 0] is the default key space id.
+            let mut apiv2_key = [RAW_KEY_PREFIX, 0, 0, 0].to_vec();
+            apiv2_key.extend(key.as_bytes());
+            key = String::from_utf8(apiv2_key).unwrap();
         }
         key
     }
@@ -1551,7 +1574,10 @@ pub mod tests {
     ) -> Key {
         if (cur_ver == ApiVersion::V1 || cur_ver == ApiVersion::V1ttl) && dst_ver == ApiVersion::V2
         {
-            raw_key.insert(0, RAW_KEY_PREFIX as char);
+            // [0, 0, 0] is the default key space id.
+            let mut apiv2_key = [RAW_KEY_PREFIX, 0, 0, 0].to_vec();
+            apiv2_key.extend(raw_key.as_bytes());
+            raw_key = String::from_utf8(apiv2_key).unwrap();
         }
         Key::from_encoded(raw_key.into_bytes())
     }
@@ -1600,22 +1626,22 @@ pub mod tests {
         stats.reset();
         let mut req = BackupRequest::default();
         let backup_start = if cur_api_ver == ApiVersion::V2 {
-            vec![RAW_KEY_PREFIX]
+            vec![RAW_KEY_PREFIX, 0, 0, 0] // key space id takes 3 bytes.
         } else {
             vec![]
         };
         let backup_end = if cur_api_ver == ApiVersion::V2 {
-            vec![RAW_KEY_PREFIX + 1]
+            vec![RAW_KEY_PREFIX, 0, 0, 1] // [0, 0, 1] is the end of the file
         } else {
             vec![]
         };
         let file_start = if dst_api_ver == ApiVersion::V2 {
-            vec![RAW_KEY_PREFIX]
+            vec![RAW_KEY_PREFIX, 0, 0, 0] // key space id takes 3 bytes.
         } else {
             vec![]
         };
         let file_end = if dst_api_ver == ApiVersion::V2 {
-            vec![RAW_KEY_PREFIX + 1]
+            vec![RAW_KEY_PREFIX, 0, 0, 1] // [0, 0, 1] is the end of the file
         } else {
             vec![]
         };

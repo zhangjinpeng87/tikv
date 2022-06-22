@@ -1,23 +1,25 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::marker::PhantomData;
-use std::sync::{atomic::AtomicU64, Arc};
+use std::{
+    marker::PhantomData,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use api_version::{ApiV1, KvFormat};
 use collections::HashMap;
 use futures::executor::block_on;
 use kvproto::kvrpcpb::{ChecksumAlgorithm, Context, GetRequest, KeyRange, LockInfo, RawGetRequest};
-use raftstore::coprocessor::RegionInfoProvider;
-use raftstore::router::RaftStoreBlackHole;
-use tikv::server::gc_worker::{AutoGcConfig, GcConfig, GcSafePointProvider, GcWorker};
-use tikv::storage::config::Config;
-use tikv::storage::kv::RocksEngine;
-use tikv::storage::lock_manager::DummyLockManager;
-use tikv::storage::{
-    test_util::GetConsumer, txn::commands, Engine, KvGetStatistics, PrewriteResult, Result,
-    Storage, TestEngineBuilder, TestStorageBuilder, TxnStatus,
+use raftstore::{coprocessor::RegionInfoProvider, router::RaftStoreBlackHole};
+use tikv::{
+    server::gc_worker::{AutoGcConfig, GcConfig, GcSafePointProvider, GcWorker},
+    storage::{
+        config::Config, kv::RocksEngine, lock_manager::DummyLockManager, test_util::GetConsumer,
+        txn::commands, Engine, KvGetStatistics, PrewriteResult, Result, Storage, TestEngineBuilder,
+        TestStorageBuilder, TxnStatus,
+    },
 };
 use tikv_util::time::Instant;
+use tracker::INVALID_TRACKER_TOKEN;
 use txn_types::{Key, KvPair, Mutation, TimeStamp, Value};
 
 /// A builder to build a `SyncTestStorage`.
@@ -178,10 +180,11 @@ impl<E: Engine, F: KvFormat> SyncTestStorage<E, F> {
                 req
             })
             .collect();
+        let trackers = keys.iter().map(|_| INVALID_TRACKER_TOKEN).collect();
         let p = GetConsumer::new();
         block_on(
             self.store
-                .batch_get_command(requests, ids, p.clone(), Instant::now()),
+                .batch_get_command(requests, ids, trackers, p.clone(), Instant::now()),
         )?;
         let mut values = vec![];
         for value in p.take_data().into_iter() {

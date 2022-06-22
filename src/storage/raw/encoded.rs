@@ -1,15 +1,16 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
 // #[PerformanceCriticalPath]
-use crate::storage::kv::{Iterator, Result, Snapshot, RAW_VALUE_TOMBSTONE};
-use crate::storage::Statistics;
+use std::marker::PhantomData;
 
 use api_version::KvFormat;
-use engine_traits::raw_ttl::ttl_current_ts;
-use engine_traits::CfName;
-use engine_traits::{IterOptions, ReadOptions};
-use std::marker::PhantomData;
+use engine_traits::{raw_ttl::ttl_current_ts, CfName, IterOptions, ReadOptions};
 use txn_types::{Key, Value};
+
+use crate::storage::{
+    kv::{Iterator, Result, Snapshot, RAW_VALUE_TOMBSTONE},
+    Statistics,
+};
 
 #[derive(Clone)]
 pub struct RawEncodeSnapshot<S: Snapshot, F: KvFormat> {
@@ -60,10 +61,7 @@ impl<S: Snapshot, F: KvFormat> RawEncodeSnapshot<S, F> {
 
 impl<S: Snapshot, F: KvFormat> Snapshot for RawEncodeSnapshot<S, F> {
     type Iter = RawEncodeIterator<S::Iter, F>;
-    type Ext<'a>
-    where
-        S: 'a,
-    = S::Ext<'a>;
+    type Ext<'a> = S::Ext<'a> where S: 'a;
 
     fn get(&self, key: &Key) -> Result<Option<Value>> {
         self.map_value(self.snap.get(key))

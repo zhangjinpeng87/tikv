@@ -2,59 +2,68 @@
 
 // #[PerformanceCriticalPath]: Tikv gRPC APIs implementation
 use std::sync::Arc;
-use tikv_util::time::{duration_to_ms, duration_to_sec, Instant};
 
-use super::batch::{BatcherBuilder, ReqBatcher};
-use crate::coprocessor::Endpoint;
-use crate::server::gc_worker::GcWorker;
-use crate::server::load_statistics::ThreadLoadPool;
-use crate::server::metrics::*;
-use crate::server::snap::Task as SnapTask;
-use crate::server::Error;
-use crate::server::Proxy;
-use crate::server::Result as ServerResult;
-use crate::storage::{
-    errors::{
-        extract_committed, extract_key_error, extract_key_errors, extract_kv_pairs,
-        extract_region_error, map_kv_pairs,
-    },
-    kv::Engine,
-    lock_manager::LockManager,
-    SecondaryLocksStatus, Storage, TxnStatus,
-};
-use crate::{coprocessor_v2, log_net_error};
-use crate::{forward_duplex, forward_unary};
 use api_version::KvFormat;
 use fail::fail_point;
-use futures::compat::Future01CompatExt;
-use futures::future::{self, Future, FutureExt, TryFutureExt};
-use futures::sink::SinkExt;
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::{
+    compat::Future01CompatExt,
+    future::{self, Future, FutureExt, TryFutureExt},
+    sink::SinkExt,
+    stream::{StreamExt, TryStreamExt},
+};
 use grpcio::{
     ClientStreamingSink, DuplexSink, Error as GrpcError, RequestStream, Result as GrpcResult,
     RpcContext, RpcStatus, RpcStatusCode, ServerStreamingSink, UnarySink, WriteFlags,
 };
-use kvproto::coprocessor::*;
-use kvproto::errorpb::{Error as RegionError, *};
-use kvproto::kvrpcpb::*;
-use kvproto::mpp::*;
-use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest};
-use kvproto::raft_serverpb::*;
-use kvproto::tikvpb::*;
+use kvproto::{
+    coprocessor::*,
+    errorpb::{Error as RegionError, *},
+    kvrpcpb::*,
+    mpp::*,
+    raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest},
+    raft_serverpb::*,
+    tikvpb::*,
+};
 use protobuf::RepeatedField;
 use raft::eraftpb::MessageType;
-use raftstore::router::RaftStoreRouter;
-use raftstore::store::memory::{MEMTRACE_APPLYS, MEMTRACE_RAFT_ENTRIES, MEMTRACE_RAFT_MESSAGES};
-use raftstore::store::metrics::RAFT_ENTRIES_CACHES_GAUGE;
-use raftstore::store::CheckLeaderTask;
-use raftstore::store::{Callback, CasualMessage, RaftCmdExtraOpts};
-use raftstore::{DiscardReason, Error as RaftStoreError, Result as RaftStoreResult};
+use raftstore::{
+    router::RaftStoreRouter,
+    store::{
+        memory::{MEMTRACE_APPLYS, MEMTRACE_RAFT_ENTRIES, MEMTRACE_RAFT_MESSAGES},
+        metrics::RAFT_ENTRIES_CACHES_GAUGE,
+        Callback, CasualMessage, CheckLeaderTask, RaftCmdExtraOpts,
+    },
+    DiscardReason, Error as RaftStoreError, Result as RaftStoreResult,
+};
 use tikv_alloc::trace::MemoryTraceGuard;
-use tikv_util::future::{paired_future_callback, poll_future_notify};
-use tikv_util::mpsc::batch::{unbounded, BatchCollector, BatchReceiver, Sender};
-use tikv_util::sys::memory_usage_reaches_high_water;
-use tikv_util::worker::Scheduler;
+use tikv_util::{
+    future::{paired_future_callback, poll_future_notify},
+    mpsc::batch::{unbounded, BatchCollector, BatchReceiver, Sender},
+    sys::memory_usage_reaches_high_water,
+    time::{duration_to_ms, duration_to_sec, Instant},
+    worker::Scheduler,
+};
+use tracker::{set_tls_tracker_token, RequestInfo, RequestType, Tracker, GLOBAL_TRACKERS};
 use txn_types::{self, Key};
+
+use super::batch::{BatcherBuilder, ReqBatcher};
+use crate::{
+    coprocessor::Endpoint,
+    coprocessor_v2, forward_duplex, forward_unary, log_net_error,
+    server::{
+        gc_worker::GcWorker, load_statistics::ThreadLoadPool, metrics::*, snap::Task as SnapTask,
+        Error, Proxy, Result as ServerResult,
+    },
+    storage::{
+        errors::{
+            extract_committed, extract_key_error, extract_key_errors, extract_kv_pairs,
+            extract_region_error, map_kv_pairs,
+        },
+        kv::Engine,
+        lock_manager::LockManager,
+        SecondaryLocksStatus, Storage, TxnStatus,
+    },
+};
 
 const GRPC_MSG_MAX_BATCH_SIZE: usize = 128;
 const GRPC_MSG_NOTIFY_SIZE: usize = 8;
@@ -1100,7 +1109,14 @@ impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager, F: KvFor
             let mut resp = CheckLeaderResponse::default();
             resp.set_ts(ts);
             resp.set_regions(regions);
-            sink.success(resp).await?;
+            if let Err(e) = sink.success(resp).await {
+                // CheckLeader has a built-in fast-success mechanism, so `RemoteStopped`
+                // can be treated as a general situation.
+                if let GrpcError::RemoteStopped = e {
+                    return ServerResult::Ok(());
+                }
+                return Err(Error::from(e));
+            }
             ServerResult::Ok(())
         }
         .map_err(move |e| {
@@ -1312,6 +1328,12 @@ fn future_get<E: Engine, L: LockManager, F: KvFormat>(
     storage: &Storage<E, L, F>,
     mut req: GetRequest,
 ) -> impl Future<Output = ServerResult<GetResponse>> {
+    let tracker = GLOBAL_TRACKERS.insert(Tracker::new(RequestInfo::new(
+        req.get_context(),
+        RequestType::KvGet,
+        req.get_version(),
+    )));
+    set_tls_tracker_token(tracker);
     let start = Instant::now();
     let v = storage.get(
         req.take_context(),
@@ -1331,7 +1353,9 @@ fn future_get<E: Engine, L: LockManager, F: KvFormat>(
                     let exec_detail_v2 = resp.mut_exec_details_v2();
                     let scan_detail_v2 = exec_detail_v2.mut_scan_detail_v2();
                     stats.stats.write_scan_detail(scan_detail_v2);
-                    stats.perf_stats.write_scan_detail(scan_detail_v2);
+                    GLOBAL_TRACKERS.with_tracker(tracker, |tracker| {
+                        tracker.write_scan_detail(scan_detail_v2);
+                    });
                     let time_detail = exec_detail_v2.mut_time_detail();
                     time_detail.set_kv_read_wall_time_ms(duration_ms as i64);
                     time_detail.set_wait_wall_time_ms(stats.latency_stats.wait_wall_time_ms as i64);
@@ -1345,6 +1369,7 @@ fn future_get<E: Engine, L: LockManager, F: KvFormat>(
                 Err(e) => resp.set_error(extract_key_error(&e)),
             }
         }
+        GLOBAL_TRACKERS.remove(tracker);
         Ok(resp)
     }
 }
@@ -1353,6 +1378,12 @@ fn future_scan<E: Engine, L: LockManager, F: KvFormat>(
     storage: &Storage<E, L, F>,
     mut req: ScanRequest,
 ) -> impl Future<Output = ServerResult<ScanResponse>> {
+    let tracker = GLOBAL_TRACKERS.insert(Tracker::new(RequestInfo::new(
+        req.get_context(),
+        RequestType::KvScan,
+        req.get_version(),
+    )));
+    set_tls_tracker_token(tracker);
     let end_key = Key::from_raw_maybe_unbounded(req.get_end_key());
 
     let v = storage.scan(
@@ -1386,6 +1417,7 @@ fn future_scan<E: Engine, L: LockManager, F: KvFormat>(
                 }
             }
         }
+        GLOBAL_TRACKERS.remove(tracker);
         Ok(resp)
     }
 }
@@ -1394,6 +1426,12 @@ fn future_batch_get<E: Engine, L: LockManager, F: KvFormat>(
     storage: &Storage<E, L, F>,
     mut req: BatchGetRequest,
 ) -> impl Future<Output = ServerResult<BatchGetResponse>> {
+    let tracker = GLOBAL_TRACKERS.insert(Tracker::new(RequestInfo::new(
+        req.get_context(),
+        RequestType::KvBatchGet,
+        req.get_version(),
+    )));
+    set_tls_tracker_token(tracker);
     let start = Instant::now();
     let keys = req.get_keys().iter().map(|x| Key::from_raw(x)).collect();
     let v = storage.batch_get(req.take_context(), keys, req.get_version().into());
@@ -1411,7 +1449,9 @@ fn future_batch_get<E: Engine, L: LockManager, F: KvFormat>(
                     let exec_detail_v2 = resp.mut_exec_details_v2();
                     let scan_detail_v2 = exec_detail_v2.mut_scan_detail_v2();
                     stats.stats.write_scan_detail(scan_detail_v2);
-                    stats.perf_stats.write_scan_detail(scan_detail_v2);
+                    GLOBAL_TRACKERS.with_tracker(tracker, |tracker| {
+                        tracker.write_scan_detail(scan_detail_v2);
+                    });
                     let time_detail = exec_detail_v2.mut_time_detail();
                     time_detail.set_kv_read_wall_time_ms(duration_ms as i64);
                     time_detail.set_wait_wall_time_ms(stats.latency_stats.wait_wall_time_ms as i64);
@@ -1429,6 +1469,7 @@ fn future_batch_get<E: Engine, L: LockManager, F: KvFormat>(
                 }
             }
         }
+        GLOBAL_TRACKERS.remove(tracker);
         Ok(resp)
     }
 }
@@ -1437,6 +1478,12 @@ fn future_scan_lock<E: Engine, L: LockManager, F: KvFormat>(
     storage: &Storage<E, L, F>,
     mut req: ScanLockRequest,
 ) -> impl Future<Output = ServerResult<ScanLockResponse>> {
+    let tracker = GLOBAL_TRACKERS.insert(Tracker::new(RequestInfo::new(
+        req.get_context(),
+        RequestType::KvScanLock,
+        req.get_max_version(),
+    )));
+    set_tls_tracker_token(tracker);
     let start_key = Key::from_raw_maybe_unbounded(req.get_start_key());
     let end_key = Key::from_raw_maybe_unbounded(req.get_end_key());
 
@@ -1459,6 +1506,7 @@ fn future_scan_lock<E: Engine, L: LockManager, F: KvFormat>(
                 Err(e) => resp.set_error(extract_key_error(&e)),
             }
         }
+        GLOBAL_TRACKERS.remove(tracker);
         Ok(resp)
     }
 }
@@ -1884,10 +1932,19 @@ macro_rules! txn_command_future {
             $req: $req_ty,
         ) -> impl Future<Output = ServerResult<$resp_ty>> {
             $prelude
+            let tracker = GLOBAL_TRACKERS.insert(Tracker::new(RequestInfo::new(
+                $req.get_context(),
+                RequestType::Unknown,
+                0,
+            )));
+            set_tls_tracker_token(tracker);
             let (cb, f) = paired_future_callback();
             let res = storage.sched_txn_command($req.into(), cb);
 
             async move {
+                defer!{{
+                    GLOBAL_TRACKERS.remove(tracker);
+                }};
                 let $v = match res {
                     Err(e) => Err(e),
                     Ok(_) => f.await?,
@@ -2137,10 +2194,12 @@ fn needs_reject_raft_append(reject_messages_on_memory_ratio: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use futures::channel::oneshot;
-    use futures::executor::block_on;
     use std::thread;
+
+    use futures::{channel::oneshot, executor::block_on};
+    use tikv_util::sys::thread::StdThreadBuildWrapper;
+
+    use super::*;
 
     #[test]
     fn test_poll_future_notify_with_slow_source() {
@@ -2149,7 +2208,7 @@ mod tests {
 
         thread::Builder::new()
             .name("source".to_owned())
-            .spawn(move || {
+            .spawn_wrapper(move || {
                 block_on(signal_rx).unwrap();
                 tx.send(100).unwrap();
             })
@@ -2172,7 +2231,7 @@ mod tests {
         let (signal_tx, signal_rx) = oneshot::channel();
         thread::Builder::new()
             .name("source".to_owned())
-            .spawn(move || {
+            .spawn_wrapper(move || {
                 tx.send(100).unwrap();
                 signal_tx.send(()).unwrap();
             })

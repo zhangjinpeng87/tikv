@@ -2,17 +2,15 @@
 
 use std::sync::Arc;
 
-use crate::metrics::*;
-use crate::Result;
 use api_version::{dispatch_api_version, ApiV2, KeyMode, KvFormat};
 use file_system::IOType;
 use futures::Future;
 use kvproto::kvrpcpb::ApiVersion;
-use tokio::io::Result as TokioResult;
-use tokio::runtime::Runtime;
+use tikv_util::{error, sys::thread::ThreadBuildWrapper};
+use tokio::{io::Result as TokioResult, runtime::Runtime};
 use txn_types::{Key, TimeStamp};
 
-use tikv_util::error;
+use crate::{metrics::*, Result};
 
 // BACKUP_V1_TO_V2_TS is used as causal timestamp to backup RawKV api version V1/V1Ttl data and save to V2 format.
 // Use 1 other than 0 because 0 is not a acceptable value for causal timestamp. See api_version::ApiV2::is_valid_ts.
@@ -92,11 +90,11 @@ pub fn create_tokio_runtime(thread_count: usize, thread_name: &str) -> TokioResu
         .thread_name(thread_name)
         .enable_io()
         .enable_time()
-        .on_thread_start(|| {
+        .after_start_wrapper(|| {
             tikv_alloc::add_thread_memory_accessor();
             file_system::set_io_type(IOType::Export);
         })
-        .on_thread_stop(|| {
+        .before_stop_wrapper(|| {
             tikv_alloc::remove_thread_memory_accessor();
         })
         .worker_threads(thread_count)
@@ -242,21 +240,24 @@ impl KeyValueCodec {
         &self,
         start_key: Vec<u8>,
         end_key: Vec<u8>,
-    ) -> (Vec<u8>, Vec<u8>) {
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
         if !self.is_raw_kv {
-            return (start_key, end_key);
+            return Ok((start_key, end_key));
         }
         dispatch_api_version!(self.dst_api_ver, {
-            API::convert_raw_user_key_range_version_from(self.cur_api_ver, start_key, end_key)
+            let (start, end) =
+                API::convert_raw_user_key_range_version_from(self.cur_api_ver, start_key, end_key)?;
+            Ok((start, end))
         })
     }
 }
 
 #[cfg(test)]
 pub mod tests {
-    use super::*;
     use api_version::{KvFormat, RawValue};
     use txn_types::TimeStamp;
+
+    use super::*;
 
     #[test]
     fn test_key_value_codec() {
@@ -501,14 +502,14 @@ pub mod tests {
             (
                 ApiVersion::V1,
                 ApiVersion::V2,
-                b"abc".to_vec(),
-                ApiV2::encode_raw_key_owned(b"rabc".to_vec(), ts),
+                [61, 62, 63].to_vec(),
+                ApiV2::encode_raw_key_owned([114, 0, 0, 0, 61, 62, 63].to_vec(), ts),
             ),
             (
                 ApiVersion::V1ttl,
                 ApiVersion::V2,
                 b"".to_vec(),
-                ApiV2::encode_raw_key_owned(b"r".to_vec(), ts),
+                ApiV2::encode_raw_key_owned([114, 0, 0, 0].to_vec(), ts),
             ),
         ];
 

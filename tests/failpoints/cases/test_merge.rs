@@ -1,26 +1,28 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::*;
-use std::thread;
-use std::time::Duration;
-
-use grpcio::{ChannelBuilder, Environment};
-use kvproto::kvrpcpb::*;
-use kvproto::raft_serverpb::{PeerState, RaftMessage, RegionLocalState};
-use kvproto::tikvpb::TikvClient;
-use raft::eraftpb::MessageType;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        *,
+    },
+    thread,
+    time::Duration,
+};
 
 use engine_rocks::Compat;
 use engine_traits::{Peekable, CF_RAFT};
+use grpcio::{ChannelBuilder, Environment};
+use kvproto::{
+    kvrpcpb::*,
+    raft_serverpb::{PeerState, RaftMessage, RegionLocalState},
+    tikvpb::TikvClient,
+};
 use pd_client::PdClient;
+use raft::eraftpb::MessageType;
 use raftstore::store::*;
 use test_raftstore::*;
-use tikv::storage::kv::SnapshotExt;
-use tikv::storage::Snapshot;
-use tikv_util::config::*;
-use tikv_util::time::Instant;
-use tikv_util::HandyRwLock;
+use tikv::storage::{kv::SnapshotExt, Snapshot};
+use tikv_util::{config::*, time::Instant, HandyRwLock};
 use txn_types::{Key, PessimisticLock};
 
 /// Test if merge is rollback as expected.
@@ -247,7 +249,7 @@ fn test_node_merge_catch_up_logs_leader_election() {
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(10);
     cluster.cfg.raft_store.raft_election_timeout_ticks = 25;
     cluster.cfg.raft_store.raft_log_gc_threshold = 12;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 12;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(12);
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(100);
     cluster.run();
 
@@ -301,7 +303,7 @@ fn test_node_merge_catch_up_logs_no_need() {
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(10);
     cluster.cfg.raft_store.raft_election_timeout_ticks = 25;
     cluster.cfg.raft_store.raft_log_gc_threshold = 12;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 12;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(12);
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(100);
     cluster.run();
 
@@ -368,7 +370,7 @@ fn test_node_merge_recover_snapshot() {
     let mut cluster = new_node_cluster(0, 3);
     configure_for_merge(&mut cluster);
     cluster.cfg.raft_store.raft_log_gc_threshold = 12;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 12;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(12);
     let pd_client = Arc::clone(&cluster.pd_client);
     pd_client.disable_default_operator();
 
@@ -431,7 +433,7 @@ fn test_node_merge_multiple_snapshots(together: bool) {
     // make it gc quickly to trigger snapshot easily
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(20);
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(10);
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 10;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(10);
     cluster.cfg.raft_store.merge_max_log_gap = 9;
     cluster.run();
 
@@ -532,9 +534,9 @@ fn test_node_merge_restart_after_apply_premerge_before_apply_compact_log() {
     let mut cluster = new_node_cluster(0, 3);
     configure_for_merge(&mut cluster);
     cluster.cfg.raft_store.merge_max_log_gap = 10;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 11;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(11);
     // Rely on this config to trigger a compact log
-    cluster.cfg.raft_store.raft_log_gc_size_limit = ReadableSize(1);
+    cluster.cfg.raft_store.raft_log_gc_size_limit = Some(ReadableSize(1));
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(10);
 
     let pd_client = Arc::clone(&cluster.pd_client);
@@ -886,7 +888,7 @@ fn test_node_merge_write_data_to_source_region_after_merging() {
     cluster.cfg.raft_store.merge_check_tick_interval = ReadableDuration::millis(100);
     // For snapshot after merging
     cluster.cfg.raft_store.merge_max_log_gap = 10;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 12;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(12);
     cluster.cfg.raft_store.apply_batch_system.max_batch_size = Some(1);
     cluster.cfg.raft_store.apply_batch_system.pool_size = 2;
     let pd_client = Arc::clone(&cluster.pd_client);
@@ -987,7 +989,7 @@ fn test_node_merge_write_data_to_source_region_after_merging() {
 fn test_node_merge_crash_before_snapshot_then_catch_up_logs() {
     let mut cluster = new_node_cluster(0, 3);
     cluster.cfg.raft_store.merge_max_log_gap = 10;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 11;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(11);
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(50);
     // Make merge check resume quickly.
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(10);
@@ -1088,7 +1090,7 @@ fn test_node_merge_crash_before_snapshot_then_catch_up_logs() {
 fn test_node_merge_crash_when_snapshot() {
     let mut cluster = new_node_cluster(0, 3);
     cluster.cfg.raft_store.merge_max_log_gap = 10;
-    cluster.cfg.raft_store.raft_log_gc_count_limit = 11;
+    cluster.cfg.raft_store.raft_log_gc_count_limit = Some(11);
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(50);
     // Make merge check resume quickly.
     cluster.cfg.raft_store.raft_base_tick_interval = ReadableDuration::millis(10);
@@ -1246,64 +1248,6 @@ fn test_prewrite_before_max_ts_is_synced() {
     thread::sleep(Duration::from_millis(200));
     let resp = do_prewrite(&mut cluster);
     assert!(!resp.get_region_error().has_max_timestamp_not_synced());
-}
-
-/// If term is changed in catching up logs, follower needs to update the term
-/// correctly, otherwise will leave corrupted states.
-#[test]
-fn test_merge_election_and_restart() {
-    let mut cluster = new_node_cluster(0, 3);
-    configure_for_merge(&mut cluster);
-
-    let pd_client = Arc::clone(&cluster.pd_client);
-    pd_client.disable_default_operator();
-
-    let on_raft_gc_log_tick_fp = "on_raft_gc_log_tick";
-    fail::cfg(on_raft_gc_log_tick_fp, "return()").unwrap();
-
-    cluster.run();
-
-    let region = pd_client.get_region(b"k1").unwrap();
-    cluster.must_split(&region, b"k2");
-
-    let r1 = pd_client.get_region(b"k1").unwrap();
-    let r1_on_store1 = find_peer(&r1, 1).unwrap().to_owned();
-    cluster.must_transfer_leader(r1.get_id(), r1_on_store1.clone());
-    cluster.must_put(b"k11", b"v11");
-    must_get_equal(&cluster.get_engine(2), b"k11", b"v11");
-
-    let r1_on_store2 = find_peer(&r1, 2).unwrap().to_owned();
-    cluster.must_transfer_leader(r1.get_id(), r1_on_store2);
-    cluster.must_put(b"k12", b"v12");
-    must_get_equal(&cluster.get_engine(1), b"k12", b"v12");
-
-    cluster.add_send_filter(CloneFilterFactory(RegionPacketFilter::new(r1.get_id(), 2)));
-
-    // Wait new leader elected.
-    cluster.must_transfer_leader(r1.get_id(), r1_on_store1);
-    cluster.must_put(b"k13", b"v13");
-    must_get_equal(&cluster.get_engine(1), b"k13", b"v13");
-    must_get_none(&cluster.get_engine(2), b"k13");
-
-    // Don't actually execute commit merge
-    fail::cfg("after_handle_catch_up_logs_for_merge", "return()").unwrap();
-    // Now region 1 can still be merged into region 2 because leader has committed index cache.
-    let r2 = pd_client.get_region(b"k3").unwrap();
-    cluster.must_try_merge(r1.get_id(), r2.get_id());
-    // r1 on store 2 should be able to apply all committed logs.
-    must_get_equal(&cluster.get_engine(2), b"k13", b"v13");
-
-    cluster.shutdown();
-    cluster.clear_send_filters();
-    fail::remove("after_handle_catch_up_logs_for_merge");
-    cluster.start().unwrap();
-
-    // Wait for region elected to avoid timeout and backoff.
-    cluster.leader_of_region(r2.get_id());
-    // If merge can be resumed correctly, the put should succeed.
-    cluster.must_put(b"k14", b"v14");
-    // If logs from different term are process correctly, store 2 should have latest updates.
-    must_get_equal(&cluster.get_engine(2), b"k14", b"v14");
 }
 
 /// Testing that the source peer's read delegate should not be removed by the target peer
@@ -1507,11 +1451,11 @@ fn test_merge_pessimistic_locks_with_concurrent_prewrite() {
     let req2 = req.clone();
     let client2 = client.clone();
     let resp = thread::spawn(move || client2.kv_prewrite(&req2).unwrap());
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(Duration::from_millis(500));
 
     // Then, start merging. PrepareMerge should wait until prewrite is done.
     cluster.merge_region(left.id, right.id, Callback::None);
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(Duration::from_millis(500));
     assert!(txn_ext.pessimistic_locks.read().is_writable());
 
     // But a later prewrite request should fail because we have already banned all later proposals.
@@ -1645,7 +1589,7 @@ fn test_merge_pessimistic_locks_propose_fail() {
     fail::cfg("raft_propose", "pause").unwrap();
 
     cluster.merge_region(left.id, right.id, Callback::None);
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(
         txn_ext.pessimistic_locks.read().status,
         LocksStatus::MergingRegion
@@ -1656,7 +1600,7 @@ fn test_merge_pessimistic_locks_propose_fail() {
 
     // But after that, the pessimistic locks status should remain unchanged.
     for _ in 0..5 {
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(500));
         if txn_ext.pessimistic_locks.read().status == LocksStatus::Normal {
             return;
         }
