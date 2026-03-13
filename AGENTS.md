@@ -107,6 +107,18 @@ make dev
 
 The `make dev` command should pass before submitting a PR.
 
+## Quality-Enhance-Loop Skills
+
+Use the stage-specific skills under `.agents/skills/` when working on the historical bug-fix learning loop in this repo:
+
+- Coordinator: use `.agents/skills/historical-bug-loop/SKILL.md`
+- Stage 1 seed collection: use `.agents/skills/historical-bugfix-seeding/SKILL.md`
+- Stage 2 PR briefing: use `.agents/skills/bugfix-pr-briefing/SKILL.md`
+- Stage 3 suspect hunting: use `.agents/skills/similar-suspect-hunting/SKILL.md`
+- Stage 4 validation: use `.agents/skills/suspect-hypothesis-validation/SKILL.md`
+
+When the task spans multiple stages, run them in order and keep each stage's artifact separate. From Stage 2 onward, treat the agent as the reasoning engine and the stage-local scripts only as local helper tools for context extraction, repo search, and JSON assembly.
+
 ## Pull Request Instructions
 
 ### PR title
